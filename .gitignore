@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Lambda vendor directory (rebuilt during packaging)
+lambda/vendor/
+
+# Terraform local state and artifacts
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform/.terraform/
+terraform/lambda.zip
+terraform.tfplan
+terraform.tfvars
+
+# Editor/IDE
+.vscode/
+.idea/
