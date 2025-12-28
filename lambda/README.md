@@ -1,9 +1,9 @@
 # Prompt → Spotify Playlist Lambda
 
-Python 3.11 AWS Lambda that turns a natural-language prompt into a curated Spotify playlist through OpenAI + Spotify APIs. Terraform in `../terraform` provisions the Lambda, IAM role, API Gateway HTTP API, and SSM parameters required for secrets.
+Python 3.11 AWS Lambda that turns a natural-language prompt into a curated Spotify playlist through OpenAI + Spotify APIs. Terraform in `../terraform` provisions the Lambda, IAM role, API Gateway REST API, and SSM parameters required for secrets.
 
 ## Architecture Overview
-- **API Gateway HTTP API** exposes `POST /playlist` with an `x-api-key` header enforced in the Lambda.
+- **API Gateway REST API** exposes `POST /playlist` with an `x-api-key` header enforced at the edge and validated again in the Lambda.
 - **Lambda** validates the payload, calls OpenAI for a playlist spec, refreshes a Spotify access token, finds/creates playlists, resolves tracks via Spotify Search, and writes playlist contents.
 - **SSM Parameter Store** holds the shared secret, Spotify refresh credentials, and OpenAI API key (created as placeholder SecureStrings by Terraform).
 
@@ -40,6 +40,7 @@ aws ssm put-parameter --name /playlistbot/spotify/refresh_token --type SecureStr
 aws ssm put-parameter --name /playlistbot/openai/api_key --type SecureString --value <openai_key> --overwrite
 aws ssm put-parameter --name /playlistbot/security/api_key --type SecureString --value <shared_secret> --overwrite
 ```
+Do not manage `/playlistbot/spotify/refresh_token` via Terraform outputs or state—always rotate it with `aws ssm put-parameter` so concurrent Lambda refreshes can persist the latest token.
 
 ## Packaging Dependencies
 The Lambda imports `requests`, so bundle dependencies before `terraform apply`:
@@ -61,29 +62,60 @@ terraform apply tfplan
 Outputs include the Lambda name, API invoke URL, and parameter names.
 
 ## Calling the Endpoint
-Replace `<API_URL>` and `<API_KEY>` with your deployment outputs.
+Replace `<API_URL>` and `<API_KEY>` with your deployment outputs. The request body supports:
+- `prompt` (required): 1–500 character description of the vibe.
+- `mode` (optional): `create`, `update`, or `auto` (default). Only `mode` + targeting fields drive behavior.
+- `playlist_name` (optional): target playlist when `mode=update` (and no `playlist_id`) or when `mode=auto` and you want to update by name.
+- `playlist_id` (optional): deterministic target. If provided, the Lambda updates that exact playlist ID and never creates a new playlist.
 
-**Create new playlist**
+**Create new playlist explicitly**
 ```bash
 curl -X POST "<API_URL>/playlist" \
   -H "content-type: application/json" \
   -H "x-api-key: <API_KEY>" \
   -d '{
-    "prompt": "give me chill synthwave for late-night focus"
+    "prompt": "give me chill synthwave for late-night focus",
+    "mode": "create"
   }'
 ```
 
-**Update existing playlist**
+**Update existing playlist by name (create-if-missing)**
 ```bash
 curl -X POST "<API_URL>/playlist" \
   -H "content-type: application/json" \
   -H "x-api-key: <API_KEY>" \
   -d '{
     "prompt": "amp me up for a tempo run",
+    "mode": "update",
     "playlist_name": "Tempo Run Booster"
   }'
 ```
-If `playlist_name` matches an existing playlist (case-insensitive exact match), the Lambda clears all items and replaces them with the generated tracks without renaming the playlist.
+If the playlist exists its contents are replaced without renaming. If it does not exist, a new playlist is created using the OpenAI-generated base name + date suffix.
+
+**Auto mode (default)**
+```bash
+curl -X POST "<API_URL>/playlist" \
+  -H "content-type: application/json" \
+  -H "x-api-key: <API_KEY>" \
+  -d '{
+    "prompt": "give me acoustic background music for dinner",
+    "playlist_name": "Sunday Roast"
+  }'
+```
+Because no `mode` is provided, auto mode updates an existing playlist named “Sunday Roast” or creates a new one if it does not exist.
+
+**Update the last playlist via playlist_id**
+```bash
+curl -X POST "<API_URL>/playlist" \
+  -H "content-type: application/json" \
+  -H "x-api-key: <API_KEY>" \
+  -d '{
+    "prompt": "refresh it with new releases",
+    "mode": "update",
+    "playlist_id": "37i9dQZF1DX4JAvHpjipBk"
+  }'
+```
+If the playlist ID is invalid or not accessible, the Lambda returns HTTP 404 with `{"message":"playlist_id not found"}`.
 
 Responses include:
 ```json
@@ -91,9 +123,11 @@ Responses include:
   "status": "done",
   "message": "done, the playlist name is \"Tempo Run Booster\"",
   "playlist_name": "Tempo Run Booster",
+  "playlist_id": "37i9dQZF1DX4JAvHpjipBk",
   "playlist_url": "https://open.spotify.com/playlist/…",
   "matched": 48,
-  "unmatched": ["Artist – Song"]
+  "unmatched": ["Artist – Song"],
+  "mode_effective": "update"
 }
 ```
 

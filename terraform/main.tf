@@ -8,6 +8,8 @@ data "archive_file" "lambda_zip" {
   output_path = "${path.module}/lambda.zip"
 }
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_iam_role" "lambda" {
   name               = "${var.lambda_function_name}-role"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -38,12 +40,25 @@ data "aws_iam_policy_document" "lambda_inline" {
 
   statement {
     sid = "AllowParameterRead"
-    actions = ["ssm:GetParameter"]
+    actions = [
+      "ssm:GetParameter",
+      "ssm:PutParameter"
+    ]
     resources = [
       aws_ssm_parameter.spotify_client_id.arn,
       aws_ssm_parameter.spotify_refresh_token.arn,
       aws_ssm_parameter.openai_api_key.arn,
       aws_ssm_parameter.request_api_key.arn
+    ]
+  }
+
+  statement {
+    sid = "AllowRefreshWrite"
+    actions = [
+      "ssm:PutParameter"
+    ]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/playlistbot/spotify/refresh_token"
     ]
   }
 }

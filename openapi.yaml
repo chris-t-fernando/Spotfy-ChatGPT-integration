@@ -1,0 +1,131 @@
+openapi: 3.0.3
+info:
+  title: PlaylistBot API
+  version: 1.1.0
+  description: >-
+    Convert a natural-language prompt into a Spotify playlist. Supports deterministic
+    create/update behaviors with optional create-if-missing logic.
+servers:
+  - url: https://{rest_api_id}.execute-api.{region}.amazonaws.com/{stage}
+    variables:
+      rest_api_id:
+        default: your-api-id
+      region:
+        default: ap-southeast-2
+      stage:
+        default: prod
+paths:
+  /playlist:
+    post:
+      summary: Generate or update a Spotify playlist from a prompt
+      operationId: createPlaylist
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaylistRequest'
+      responses:
+        '200':
+          description: Playlist created or updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaylistResponse'
+        '400':
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid API key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  schemas:
+    PlaylistRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+          description: Natural-language description of the desired playlist.
+          minLength: 1
+          maxLength: 500
+        mode:
+          type: string
+          description: >-
+            Controls behavior. "create" always creates a new playlist; "update"
+            replaces the contents of the named playlist (creating a new one if it
+            does not exist); "auto" (default) updates when playlist_name is provided
+            otherwise creates.
+          enum: [create, update, auto]
+          default: auto
+        playlist_name:
+          type: string
+          description: Existing playlist name to update. Required when mode="update".
+        playlist_id:
+          type: string
+          description: Spotify playlist ID to update directly. Overrides playlist_name.
+    PlaylistResponse:
+      type: object
+      required:
+        - status
+        - message
+        - playlist_name
+        - playlist_id
+        - playlist_url
+        - matched
+        - unmatched
+        - mode_effective
+      properties:
+        status:
+          type: string
+          enum: [done]
+        message:
+          type: string
+        playlist_name:
+          type: string
+          description: Final playlist name (existing name or generated base + date).
+        playlist_id:
+          type: string
+          description: Spotify playlist identifier.
+        playlist_url:
+          type: string
+          format: uri
+          description: Spotify share URL.
+        matched:
+          type: integer
+          minimum: 0
+        unmatched:
+          type: array
+          items:
+            type: string
+        mode_effective:
+          type: string
+          enum: [create, update]
+          description: Whether a playlist was created or an existing one updated.
+    ErrorResponse:
+      type: object
+      required:
+        - status
+        - message
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+        details:
+          description: Optional context for debugging.
