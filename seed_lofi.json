@@ -1,6 +1,6 @@
 {
   "playlist_id": {
-    "S": "37i9dQZF1DX4JAvHpjipBk"
+    "S": "to_be_created#lofi_focus"
   },
   "enabled": {
     "BOOL": true
@@ -105,5 +105,8 @@
   },
   "history_entries": {
     "L": []
+  },
+  "rotation_cursor": {
+    "N": "0"
   }
 }

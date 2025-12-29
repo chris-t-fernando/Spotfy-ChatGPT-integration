@@ -41,6 +41,8 @@ MAX_PLAYLIST_PAGES = int(os.environ.get("MAX_PLAYLIST_PAGES", "20"))
 PROMPT_VERSION = "rotation-v1"
 BATCH_PROMPT_VERSION = "batch-v1"
 OPENAI_TRANSPORT: Optional[Callable[[Dict[str, Any]], requests.Response]] = None
+HTTP_BACKOFF_KEY = "__http_backoff__"
+PENDING_PLAYLIST_PREFIX = "to_be_created#"
 
 RUN_ID_VAR: ContextVar[str] = ContextVar("run_id", default="")
 JOB_ID_VAR: ContextVar[str] = ContextVar("job_id", default="")
@@ -154,7 +156,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         log(
             "warning", "Handled HTTP error", status=exc.status_code, message=exc.message
         )
-        return build_response(exc.status_code, exc.to_body())
+        return build_response(exc.status_code, exc.to_body(), exc.headers)
     except Exception as exc:  # pylint: disable=broad-except
         log("critical", "Unhandled exception", error=str(exc))
         return build_response(
@@ -200,6 +202,30 @@ def process_event(event: Dict[str, Any]) -> Dict[str, Any]:
     content_type = headers.get("content-type", "").split(";")[0].strip()
     if content_type != "application/json":
         raise HTTPError(400, "content-type must be application/json")
+
+    table = DDB_RESOURCE.Table(ENV_CONFIG["playlist_state_table"])
+    now_epoch = int(time.time())
+    backoff_epoch = fetch_next_eligible_epoch(table, HTTP_BACKOFF_KEY)
+    if backoff_epoch and backoff_epoch > now_epoch:
+        seconds_remaining = max(backoff_epoch - now_epoch, 1)
+        log(
+            "info",
+            "http_rate_limit_backoff",
+            seconds_remaining=seconds_remaining,
+            next_eligible_at_epoch=backoff_epoch,
+        )
+        body = {
+            "error": "openai_rate_limited",
+            "reason": "rate_limit_backoff",
+            "next_eligible_at_epoch": backoff_epoch,
+            "retry_after_s": seconds_remaining,
+            "run_id": RUN_ID_VAR.get(),
+        }
+        return build_response(
+            429,
+            body,
+            headers={"Retry-After": str(seconds_remaining)},
+        )
 
     payload = parse_json_body(event)
 
@@ -275,7 +301,9 @@ def parse_json_body(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def request_playlist_spec(
-    prompt: str, transport: Optional[Callable[[Dict[str, Any]], requests.Response]] = None
+    prompt: str,
+    transport: Optional[Callable[[Dict[str, Any]], requests.Response]] = None,
+    allow_rate_limit_retries: bool = True,
 ) -> Dict[str, Any]:
     api_key = get_secure_parameter("openai_api_key_param")
     prompt_hash = sha256_hash(prompt)
@@ -323,7 +351,10 @@ def request_playlist_spec(
         )
 
     resp = openai_request_with_retries(
-        _make_request, remaining_time_ms_fn=get_remaining_time_ms, log_call=log_call
+        _make_request,
+        remaining_time_ms_fn=get_remaining_time_ms,
+        allow_rate_limit_retries=allow_rate_limit_retries,
+        log_call=log_call,
     )
 
     if resp.status_code >= 400:
@@ -804,10 +835,15 @@ def get_secure_parameter(config_key: str, force_refresh: bool = False) -> str:
     return ssm_get_parameter(param_name, force_refresh=force_refresh)
 
 
-def build_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
+def build_response(
+    status_code: int, body: Dict[str, Any], headers: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    final_headers = {"Content-Type": "application/json"}
+    if headers:
+        final_headers.update(headers)
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": final_headers,
         "body": json.dumps(body),
     }
 
@@ -850,14 +886,23 @@ def _safe_get(container: Dict[str, Any], *keys: str) -> Optional[Any]:
 
 class HTTPError(Exception):
     def __init__(
-        self, status_code: int, message: str, details: Optional[Any] = None
+        self,
+        status_code: int,
+        message: str,
+        details: Optional[Any] = None,
+        headers: Optional[Dict[str, str]] = None,
+        raw_body: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
         self.details = details
+        self.headers = headers or {}
+        self.raw_body = raw_body
 
     def to_body(self) -> Dict[str, Any]:
+        if self.raw_body is not None:
+            return self.raw_body
         payload = {"status": "error", "message": self.message}
         if self.details is not None:
             payload["details"] = self.details
@@ -1038,6 +1083,97 @@ def set_rate_limit_backoff(
         retry_after_s=retry_after_s,
     )
     return next_epoch
+
+
+def fetch_next_eligible_epoch(table: Any, playlist_id: str) -> Optional[int]:
+    try:
+        response = table.get_item(Key={"playlist_id": playlist_id})
+    except Exception as exc:  # pylint: disable=broad-except
+        log(
+            "warning",
+            "Failed to fetch backoff state",
+            playlist_id=playlist_id,
+            error=str(exc),
+        )
+        return None
+    item = response.get("Item")
+    if not item:
+        return None
+    return _to_int(item.get("next_eligible_at_epoch"), 0)
+
+
+def ensure_playlist_id(table: Any, item: Dict[str, Any], playlist_id: Optional[str]) -> str:
+    pending = False
+    if playlist_id and not playlist_id.startswith(PENDING_PLAYLIST_PREFIX):
+        return playlist_id
+    if playlist_id and playlist_id.startswith(PENDING_PLAYLIST_PREFIX):
+        pending = True
+
+    access_token = refresh_spotify_access_token()
+    user = fetch_spotify_user(access_token)
+    base_name = (
+        item.get("base_name")
+        or item.get("playlist_name")
+        or item.get("config_name")
+        or f"PlaylistBot {datetime.now(tz=TIMEZONE).strftime('%Y-%m-%d %H:%M')}"
+    )
+    description = item.get("base_prompt")
+    playlist = create_playlist(
+        access_token, user["id"], base_name, description if isinstance(description, str) else None
+    )
+    new_playlist_id = playlist["id"]
+    item["playlist_id"] = new_playlist_id
+    try:
+        table.put_item(Item=item)
+    except Exception as exc:  # pylint: disable=broad-except
+        log(
+            "warning",
+            "Failed to persist new playlist mapping",
+            playlist_id=new_playlist_id,
+            error=str(exc),
+        )
+    placeholder_id = playlist_id if pending else None
+    if placeholder_id and placeholder_id != new_playlist_id:
+        try:
+            table.delete_item(Key={"playlist_id": placeholder_id})
+        except Exception as exc:  # pylint: disable=broad-except
+            log(
+                "warning",
+                "Failed to delete placeholder playlist entry",
+                playlist_id=placeholder_id,
+                error=str(exc),
+            )
+    log(
+        "info",
+        "bootstrap_playlist_created",
+        playlist_id=new_playlist_id,
+        playlist_name=playlist.get("name"),
+    )
+    return new_playlist_id
+
+
+def advance_rotation_cursor(
+    table: Any,
+    playlist_id: str,
+    current_cursor: int,
+    rotation_length: int,
+) -> None:
+    if rotation_length <= 0:
+        return
+    next_cursor = (current_cursor + 1) % rotation_length
+    try:
+        table.update_item(
+            Key={"playlist_id": playlist_id},
+            UpdateExpression="SET rotation_cursor = :cursor",
+            ExpressionAttributeValues={":cursor": next_cursor},
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        log(
+            "warning",
+            "Failed to advance rotation cursor",
+            playlist_id=playlist_id,
+            error=str(exc),
+        )
 def build_scheduled_prompt(
     base_prompt: str,
     needed: int,
@@ -1381,8 +1517,9 @@ def process_scheduled_event() -> Dict[str, Any]:
         )
         genre = item.get("genre") or item.get("base_genre") or "unspecified"
         previous_subgenre = history_entries[-1].get("selected_subgenre") if history_entries else None
+        rotation_themes = item.get("rotation_themes") or []
 
-        if not playlist_id or not base_prompt:
+        if not base_prompt:
             failed += 1
             log(
                 "warning",
@@ -1416,6 +1553,8 @@ def process_scheduled_event() -> Dict[str, Any]:
                 }
             )
             continue
+        playlist_id = ensure_playlist_id(table, item, playlist_id)
+        job_id = f"{playlist_id}:{RUN_ID_VAR.get()}"
 
         next_eligible_epoch = _to_int(item.get("next_eligible_at_epoch"), 0)
         now_epoch = int(time.time())
@@ -1451,8 +1590,6 @@ def process_scheduled_event() -> Dict[str, Any]:
         max_overlap_yesterday = _to_float(item.get("max_overlap_yesterday"), 0.35)
         max_overlap_window = _to_float(item.get("max_overlap_window"), 0.55)
         min_new_artists_window = _to_float(item.get("min_new_artists_window"), 0.60)
-        rotation_themes = item.get("rotation_themes") or []
-
         exclude_track_keys, exclude_artist_keys, window_uris = build_history_sets(
             history_entries, window_days
         )
@@ -1463,9 +1600,10 @@ def process_scheduled_event() -> Dict[str, Any]:
         theme_prompt = None
         theme_name = None
         rotation_index = None
-        if rotation_themes:
-            today_int = int(datetime.now(tz=TIMEZONE).strftime("%Y%m%d"))
-            rotation_index = today_int % len(rotation_themes)
+        rotation_length = len(rotation_themes)
+        rotation_cursor = _to_int(item.get("rotation_cursor"), 0)
+        if rotation_length:
+            rotation_index = rotation_cursor % rotation_length
             theme = rotation_themes[rotation_index]
             theme_name = theme.get("name")
             theme_prompt = theme.get("prompt")
@@ -1489,7 +1627,9 @@ def process_scheduled_event() -> Dict[str, Any]:
             "yesterday_uris": yesterday_uris,
             "theme_name": theme_name,
             "theme_prompt": theme_prompt,
-            "rotation_index": rotation_index,
+        "rotation_index": rotation_index,
+        "rotation_cursor": rotation_cursor,
+        "rotation_length": rotation_length,
             "previous_subgenre": previous_subgenre,
         }
         job_contexts.append(job_context)
@@ -1600,6 +1740,12 @@ def process_scheduled_event() -> Dict[str, Any]:
             job_result = run_scheduled_playlist(job, spec_entry, table)
             succeeded += 1
             duration_ms = int((time.perf_counter() - job_start) * 1000)
+            advance_rotation_cursor(
+                table,
+                playlist_id,
+                job.get("rotation_cursor", 0),
+                job.get("rotation_length", 0),
+            )
             log(
                 "info",
                 "scheduled_job_complete",
@@ -1657,11 +1803,13 @@ def process_scheduled_event() -> Dict[str, Any]:
                 )
             else:
                 failed += 1
+                status_code = getattr(exc, "status_code", 500)
+                error_category = reason or exc.message
                 failures.append(
                     {
                         "playlist_id": playlist_id,
-                        "reason": reason or exc.message,
-                        "status": exc.status_code,
+                        "reason": error_category,
+                        "status": status_code,
                     }
                 )
                 results.append(
@@ -1672,8 +1820,9 @@ def process_scheduled_event() -> Dict[str, Any]:
                         "selected_subgenre": job.get("theme_name"),
                         "prompt_hash": job.get("prompt_hash"),
                         "outcome": "failed",
-                        "error_category": reason or exc.message,
+                        "error_category": error_category,
                         "error_message": str(exc)[:200],
+                        "status_code": status_code,
                     }
                 )
                 duration_ms = int((time.perf_counter() - job_start) * 1000)
@@ -1684,7 +1833,8 @@ def process_scheduled_event() -> Dict[str, Any]:
                     job_id=job_id,
                     outcome="failed",
                     duration_ms=duration_ms,
-                    error_category=reason or exc.message,
+                    error_category=error_category,
+                    status_code=status_code,
                 )
         except Exception as exc:  # pylint: disable=broad-except
             failed += 1
@@ -1761,7 +1911,34 @@ def generate_playlist_response(
     playlist_id: Optional[str],
     should_attempt_update: bool,
 ) -> Dict[str, Any]:
-    spec = request_playlist_spec(prompt)
+    try:
+        spec = request_playlist_spec(
+            prompt, allow_rate_limit_retries=False
+        )
+    except HTTPError as exc:
+        reason = (exc.details or {}).get("reason") if exc.details else None
+        if reason == "openai_rate_limited":
+            retry_after_s = _to_int((exc.details or {}).get("retry_after_s"), 60)
+            table = DDB_RESOURCE.Table(ENV_CONFIG["playlist_state_table"])
+            next_epoch = set_rate_limit_backoff(
+                table, HTTP_BACKOFF_KEY, retry_after_s
+            )
+            seconds_remaining = max(next_epoch - int(time.time()), 1)
+            body = {
+                "error": "openai_rate_limited",
+                "reason": "rate_limit_backoff",
+                "next_eligible_at_epoch": next_epoch,
+                "retry_after_s": seconds_remaining,
+                "run_id": RUN_ID_VAR.get(),
+            }
+            raise HTTPError(
+                429,
+                "openai_rate_limited",
+                details={"reason": "openai_rate_limited"},
+                headers={"Retry-After": str(seconds_remaining)},
+                raw_body=body,
+            ) from exc
+        raise
     suffix = datetime.now(tz=TIMEZONE).strftime(" %d-%m-%Y")
     desired_name = f"{spec['base_name']}{suffix}"
 

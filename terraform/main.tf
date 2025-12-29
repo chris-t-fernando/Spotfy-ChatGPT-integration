@@ -82,7 +82,8 @@ data "aws_iam_policy_document" "lambda_inline" {
       "dynamodb:GetItem",
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
-      "dynamodb:Scan"
+      "dynamodb:Scan",
+      "dynamodb:DeleteItem"
     ]
     resources = [
       aws_dynamodb_table.playlist_state.arn

@@ -68,10 +68,12 @@ Terraform also provisions:
 
 ### 1. Seed the DynamoDB table
 Start with at least one playlist configuration. Example (Lo-fi Study with seven rotating sub-genres):
+- `playlist_id` can be a placeholder formatted as `to_be_created#<slug>`. The Lambda will create the playlist on the first scheduled run, persist the real Spotify playlist id back into DynamoDB, and delete the placeholder entry.
+- Include `rotation_cursor` (initially `"0"`) so the Lambda can remember which sub-genre runs next.
 Use DynamoDB attribute-value JSON (every attribute needs a type wrapper):
 ```json
 {
-  "playlist_id": {"S": "37i9dQZF1DX4JAvHpjipBk"},
+  "playlist_id": {"S": "to_be_created#lofi_focus"},
   "enabled": {"BOOL": true},
   "base_prompt": {"S": "Curate chilled lo-fi beats for deep focus with warm textures."},
   "rotation_themes": {
@@ -92,7 +94,8 @@ Use DynamoDB attribute-value JSON (every attribute needs a type wrapper):
   "max_overlap_window": {"N": "0.55"},
   "min_new_artists_window": {"N": "0.6"},
   "max_attempts": {"N": "4"},
-  "history_entries": {"L": []}
+  "history_entries": {"L": []},
+  "rotation_cursor": {"N": "0"}
 }
 ```
 Insert via CLI:
