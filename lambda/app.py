@@ -12,10 +12,63 @@ from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import boto3
-from boto3.dynamodb.conditions import Attr
 from zoneinfo import ZoneInfo
+
+try:
+    import boto3
+    from boto3.dynamodb.conditions import Attr
+except ImportError:  # pragma: no cover - executed when boto3 unavailable locally
+    boto3 = None
+
+    class Attr:  # type: ignore[override]
+        """Fallback Attr stub to keep tests working without boto3."""
+
+        def __init__(self, name: str):
+            self.name = name
+
+        def eq(self, value: Any) -> Dict[str, Any]:
+            return {"attribute": self.name, "op": "eq", "value": value}
+
+
+class _MissingBoto3Object:
+    """Stub to provide clearer errors when boto3 clients/resources are missing."""
+
+    def __init__(self, kind: str, service_name: str):
+        self._kind = kind
+        self._service = service_name
+        exceptions_cls = type("exceptions", (), {})
+        if service_name == "ssm":
+            class ParameterNotFound(Exception):
+                """Raised when an SSM parameter is missing."""
+
+                pass
+
+            exceptions_cls.ParameterNotFound = ParameterNotFound
+        self.exceptions = exceptions_cls
+
+    def __getattr__(self, item: str) -> Any:
+        raise RuntimeError(
+            f"boto3 is required to use AWS {self._kind} '{self._service}'. "
+            "Install boto3 in the runtime or provide a mock during testing."
+        )
+
+
+def _create_boto3_client(service_name: str) -> Any:
+    if boto3 is None:
+        return _MissingBoto3Object("client", service_name)
+    try:
+        return boto3.client(service_name)
+    except Exception:
+        return _MissingBoto3Object("client", service_name)
+
+
+def _create_boto3_resource(service_name: str) -> Any:
+    if boto3 is None:
+        return _MissingBoto3Object("resource", service_name)
+    try:
+        return boto3.resource(service_name)
+    except Exception:
+        return _MissingBoto3Object("resource", service_name)
 
 VENDOR_DIR = os.path.join(os.path.dirname(__file__), "vendor")
 if VENDOR_DIR not in sys.path and os.path.isdir(VENDOR_DIR):
@@ -31,8 +84,8 @@ LOGGER_LEVELS = {
 
 REQUEST_TIMEOUT = (10, 30)
 SSM_CACHE: Dict[str, Tuple[str, float]] = {}
-SSM_CLIENT = boto3.client("ssm")
-DDB_RESOURCE = boto3.resource("dynamodb")
+SSM_CLIENT = _create_boto3_client("ssm")
+DDB_RESOURCE = _create_boto3_resource("dynamodb")
 REQUEST_SESSION = requests.Session()
 TIMEZONE = ZoneInfo("Australia/Melbourne")
 VALID_MODES = {"create", "update", "auto"}
@@ -1184,7 +1237,8 @@ def build_scheduled_prompt(
 ) -> str:
     parts = [
         base_prompt.strip(),
-        f"Generate {needed} fresh tracks (artist and title). Provide only original studio versions and keep the existing vibe.",
+        f"Generate at least {needed} unique tracks (artist and title). Provide only original studio versions and keep the existing vibe.",
+        "Return the full list; do not truncate or omit entries.",
     ]
     if theme_prompt:
         parts.append(theme_prompt.strip())
@@ -1627,9 +1681,9 @@ def process_scheduled_event() -> Dict[str, Any]:
             "yesterday_uris": yesterday_uris,
             "theme_name": theme_name,
             "theme_prompt": theme_prompt,
-        "rotation_index": rotation_index,
-        "rotation_cursor": rotation_cursor,
-        "rotation_length": rotation_length,
+            "rotation_index": rotation_index,
+            "rotation_cursor": rotation_cursor,
+            "rotation_length": rotation_length,
             "previous_subgenre": previous_subgenre,
         }
         job_contexts.append(job_context)
@@ -1647,6 +1701,12 @@ def process_scheduled_event() -> Dict[str, Any]:
         )
         JOB_ID_VAR.reset(job_token)
 
+        prompt_needed = min(
+            track_count * 2,
+            track_count + max(15, track_count // 2),
+        )
+        job_context["prompt_track_target"] = prompt_needed
+
         extra_instructions = [
             (
                 "Respect novelty guardrails: "
@@ -1658,7 +1718,7 @@ def process_scheduled_event() -> Dict[str, Any]:
         ]
         prompt_text = build_scheduled_prompt(
             base_prompt,
-            track_count,
+            prompt_needed,
             list(exclude_track_keys),
             list(exclude_artist_keys),
             theme_prompt=theme_prompt,
