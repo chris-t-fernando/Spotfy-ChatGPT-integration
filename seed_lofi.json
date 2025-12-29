@@ -1,0 +1,109 @@
+{
+  "playlist_id": {
+    "S": "37i9dQZF1DX4JAvHpjipBk"
+  },
+  "enabled": {
+    "BOOL": true
+  },
+  "base_prompt": {
+    "S": "Curate chilled lo-fi beats for deep focus with warm textures."
+  },
+  "rotation_themes": {
+    "L": [
+      {
+        "M": {
+          "name": {
+            "S": "Ghibli Comfort"
+          },
+          "prompt": {
+            "S": "Blend Studio Ghibli inspired motifs."
+          }
+        }
+      },
+      {
+        "M": {
+          "name": {
+            "S": "Neo Classical"
+          },
+          "prompt": {
+            "S": "Lean into soft piano & modern classical."
+          }
+        }
+      },
+      {
+        "M": {
+          "name": {
+            "S": "Rainy Neon"
+          },
+          "prompt": {
+            "S": "Rain ambience with neon city vibes."
+          }
+        }
+      },
+      {
+        "M": {
+          "name": {
+            "S": "Jazz Café"
+          },
+          "prompt": {
+            "S": "Dusty jazz-hop sampled warmth."
+          }
+        }
+      },
+      {
+        "M": {
+          "name": {
+            "S": "Bossa Drift"
+          },
+          "prompt": {
+            "S": "Brazilian bossa undertones and nylon guitar."
+          }
+        }
+      },
+      {
+        "M": {
+          "name": {
+            "S": "Ambient Lean"
+          },
+          "prompt": {
+            "S": "Soft pads + minimal percussion."
+          }
+        }
+      },
+      {
+        "M": {
+          "name": {
+            "S": "Bit-crushed Nostalgia"
+          },
+          "prompt": {
+            "S": "8-bit textures and tape hiss."
+          }
+        }
+      }
+    ]
+  },
+  "window_days": {
+    "N": "14"
+  },
+  "track_count": {
+    "N": "50"
+  },
+  "max_tracks_per_artist": {
+    "N": "1"
+  },
+  "max_overlap_yesterday": {
+    "N": "0.35"
+  },
+  "max_overlap_window": {
+    "N": "0.55"
+  },
+  "min_new_artists_window": {
+    "N": "0.6"
+  },
+  "max_attempts": {
+    "N": "4"
+  },
+  "history_entries": {
+    "L": []
+  }
+}

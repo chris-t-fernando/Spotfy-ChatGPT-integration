@@ -61,6 +61,58 @@ terraform apply tfplan
 ```
 Outputs include the Lambda name, API invoke URL, and parameter names.
 
+## Scheduled Playlist Regeneration
+Terraform also provisions:
+- **DynamoDB `playlistbot_state`** to store scheduled playlist configs + history
+- **EventBridge rule `playlistbot-daily-regen`** (runs daily at 03:10 Australia/Melbourne, i.e., 17:10 UTC) that invokes the Lambda with `{"scheduled":true}`
+
+### 1. Seed the DynamoDB table
+Start with at least one playlist configuration. Example (Lo-fi Study with seven rotating sub-genres):
+Use DynamoDB attribute-value JSON (every attribute needs a type wrapper):
+```json
+{
+  "playlist_id": {"S": "37i9dQZF1DX4JAvHpjipBk"},
+  "enabled": {"BOOL": true},
+  "base_prompt": {"S": "Curate chilled lo-fi beats for deep focus with warm textures."},
+  "rotation_themes": {
+    "L": [
+      {"M": {"name": {"S": "Ghibli Comfort"}, "prompt": {"S": "Blend Studio Ghibli inspired motifs."}}},
+      {"M": {"name": {"S": "Neo Classical"}, "prompt": {"S": "Lean into soft piano & modern classical."}}},
+      {"M": {"name": {"S": "Rainy Neon"}, "prompt": {"S": "Rain ambience with neon city vibes."}}},
+      {"M": {"name": {"S": "Jazz Café"}, "prompt": {"S": "Dusty jazz-hop sampled warmth."}}},
+      {"M": {"name": {"S": "Bossa Drift"}, "prompt": {"S": "Brazilian bossa undertones and nylon guitar."}}},
+      {"M": {"name": {"S": "Ambient Lean"}, "prompt": {"S": "Soft pads + minimal percussion."}}},
+      {"M": {"name": {"S": "Bit-crushed Nostalgia"}, "prompt": {"S": "8-bit textures and tape hiss."}}}
+    ]
+  },
+  "window_days": {"N": "14"},
+  "track_count": {"N": "50"},
+  "max_tracks_per_artist": {"N": "1"},
+  "max_overlap_yesterday": {"N": "0.35"},
+  "max_overlap_window": {"N": "0.55"},
+  "min_new_artists_window": {"N": "0.6"},
+  "max_attempts": {"N": "4"},
+  "history_entries": {"L": []}
+}
+```
+Insert via CLI:
+```bash
+aws dynamodb put-item \
+  --table-name playlistbot_state \
+  --item file://seed_lofi.json
+```
+Repeat for each playlist you want auto-rotated. Set `enabled=false` to pause.
+
+### 2. How scheduling works
+- EventBridge calls the Lambda once per day (`{"scheduled":true}`).
+- Lambda scans `playlistbot_state` for `enabled=true` entries, determines the rotation theme for the day, and regenerates the Spotify playlist by `playlist_id`.
+- Novelty guards enforce rolling no-repeat windows, maximum overlap, and minimum new artist ratios. Exclusions are passed into OpenAI prompts and enforced post-generation.
+
+### 3. Adding/changing sub-genres (rotation themes)
+- Add additional objects in `rotation_themes`. The Lambda picks them deterministically using `(YYYYMMDD % len(rotation_themes))`, ensuring a predictable cycle.
+- Update policy fields (`window_days`, `track_count`, etc.) to tune novelty pressure per playlist.
+- `history_entries` are updated automatically after each run; do not edit manually unless seeding initial history.
+
 ## Calling the Endpoint
 Replace `<API_URL>` and `<API_KEY>` with your deployment outputs. The request body supports:
 - `prompt` (required): 1–500 character description of the vibe.

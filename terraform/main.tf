@@ -10,6 +10,20 @@ data "archive_file" "lambda_zip" {
 
 data "aws_caller_identity" "current" {}
 
+resource "aws_dynamodb_table" "playlist_state" {
+  name         = "playlistbot_state"
+  billing_mode = "PAY_PER_REQUEST"
+
+  hash_key = "playlist_id"
+
+  attribute {
+    name = "playlist_id"
+    type = "S"
+  }
+
+  tags = var.tags
+}
+
 resource "aws_iam_role" "lambda" {
   name               = "${var.lambda_function_name}-role"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -61,6 +75,19 @@ data "aws_iam_policy_document" "lambda_inline" {
       "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/playlistbot/spotify/refresh_token"
     ]
   }
+
+  statement {
+    sid = "AllowPlaylistStateDynamo"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:Scan"
+    ]
+    resources = [
+      aws_dynamodb_table.playlist_state.arn
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda_inline" {
@@ -76,6 +103,7 @@ resource "aws_lambda_function" "playlist" {
   handler       = "app.handler"
   memory_size   = var.lambda_memory_mb
   timeout       = var.lambda_timeout_seconds
+  reserved_concurrent_executions = var.lambda_reserved_concurrency
 
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
@@ -88,6 +116,7 @@ resource "aws_lambda_function" "playlist" {
       PARAM_REQUEST_API_KEY       = aws_ssm_parameter.request_api_key.name
       DEFAULT_MARKET              = "AU"
       DEFAULT_PLAYLIST_PUBLIC     = "false"
+      HANDLER_TIMEOUT_SECONDS     = tostring(var.lambda_timeout_seconds)
     }
   }
 
@@ -193,6 +222,28 @@ resource "aws_lambda_permission" "apigw" {
   function_name = aws_lambda_function.playlist.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.playlist.execution_arn}/*/*"
+}
+
+resource "aws_cloudwatch_event_rule" "daily_regen" {
+  name                = "playlistbot-daily-regen"
+  description         = "Daily playlist regeneration trigger"
+  schedule_expression = "cron(10 17 * * ? *)" # 03:10 Australia/Melbourne = 17:10 UTC previous day
+  tags                = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "daily_regen_lambda" {
+  rule      = aws_cloudwatch_event_rule.daily_regen.name
+  target_id = "playlistbot-lambda"
+  arn       = aws_lambda_function.playlist.arn
+  input     = jsonencode({ scheduled = true })
+}
+
+resource "aws_lambda_permission" "events" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.playlist.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_regen.arn
 }
 
 resource "aws_ssm_parameter" "spotify_client_id" {

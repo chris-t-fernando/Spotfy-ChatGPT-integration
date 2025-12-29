@@ -23,3 +23,13 @@ output "ssm_parameters" {
     aws_ssm_parameter.request_api_key.name
   ]
 }
+
+output "dynamodb_table_name" {
+  description = "Playlist state DynamoDB table"
+  value       = aws_dynamodb_table.playlist_state.name
+}
+
+output "eventbridge_rule_name" {
+  description = "Daily regeneration EventBridge rule name"
+  value       = aws_cloudwatch_event_rule.daily_regen.name
+}

@@ -19,7 +19,13 @@ variable "lambda_memory_mb" {
 variable "lambda_timeout_seconds" {
   description = "Execution timeout for the Lambda function"
   type        = number
-  default     = 60
+  default     = 600
+}
+
+variable "lambda_reserved_concurrency" {
+  description = "Reserved concurrency for the Lambda function"
+  type        = number
+  default     = 1
 }
 
 variable "tags" {
