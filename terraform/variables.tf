@@ -31,13 +31,13 @@ variable "lambda_reserved_concurrency" {
 variable "scheduled_openai_max_attempts" {
   description = "Maximum retries for scheduled OpenAI batch requests"
   type        = number
-  default     = 1
+  default     = 3
 }
 
 variable "tags" {
   description = "Common tags"
   type        = map(string)
-  default     = {
+  default = {
     Project = "prompt-playlist"
   }
 }
