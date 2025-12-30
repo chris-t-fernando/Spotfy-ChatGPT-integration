@@ -259,3 +259,85 @@ def test_advance_rotation_cursor(monkeypatch):
     app.advance_rotation_cursor(table, "pl3", 1, 3)
     assert table.update_calls
     assert table.update_calls[0]["ExpressionAttributeValues"][":cursor"] == 2
+
+
+def test_retry_next_theme_when_tracks_excluded(monkeypatch):
+    items = [
+        {
+            "playlist_id": "pl_retry",
+            "base_prompt": "Focus vibes",
+            "config_name": "Retry Test",
+            "history_entries": [],
+            "enabled": True,
+            "rotation_cursor": 0,
+            "rotation_themes": [
+                {"name": "Theme A", "prompt": "Do A"},
+                {"name": "Theme B", "prompt": "Do B"},
+            ],
+        }
+    ]
+    table = FakeTable(items)
+    monkeypatch.setattr(app, "DDB_RESOURCE", FakeDDBResource(table))
+    config = base_config()
+    config["scheduled_openai_max_attempts"] = 1
+    monkeypatch.setattr(app, "ENV_CONFIG", config)
+    monkeypatch.setattr(app, "get_secure_parameter", lambda _: "fake-key")
+
+    batch_spec = {
+        "base_name": "Initial",
+        "description": "desc",
+        "tracks": [{"artist": "ArtistA", "title": "SongA"}],
+    }
+    retry_spec = {
+        "base_name": "Retry",
+        "description": "desc",
+        "tracks": [{"artist": "ArtistB", "title": "SongB"}],
+    }
+
+    monkeypatch.setattr(
+        app,
+        "request_batch_playlist_specs",
+        lambda jobs, **_: {"pl_retry": batch_spec},
+    )
+    monkeypatch.setattr(
+        app,
+        "request_playlist_spec",
+        lambda prompt, allow_rate_limit_retries=False: retry_spec,
+    )
+
+    call_state = {"count": 0}
+
+    def fake_filter(*args, **kwargs):
+        if call_state["count"] == 0:
+            call_state["count"] += 1
+            raise app.HTTPError(
+                502,
+                "no tracks available after applying exclusions",
+                {"reason": "no_tracks_available_after_exclusions"},
+            )
+        return [{"artist": "ArtistB", "title": "SongB"}]
+
+    monkeypatch.setattr(app, "filter_tracks_with_constraints", fake_filter)
+    monkeypatch.setattr(app, "refresh_spotify_access_token", lambda: "token")
+    monkeypatch.setattr(app, "resolve_track_uris", lambda *args, **kwargs: (["uri"], []))
+    monkeypatch.setattr(app, "replace_playlist_contents", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "update_playlist_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "fetch_spotify_user", lambda _: {"id": "user"})
+    monkeypatch.setattr(
+        app,
+        "create_playlist",
+        lambda access_token, user_id, name, description: {"id": "pl_retry"},
+    )
+    monkeypatch.setattr(
+        app,
+        "fetch_playlist_by_id",
+        lambda access_token, playlist_id: {
+            "id": playlist_id,
+            "name": "Retry Test",
+            "external_urls": {"spotify": "url"},
+        },
+    )
+
+    summary = app.process_scheduled_event()
+    assert summary["succeeded"] == 1
+    assert summary["failed"] == 0

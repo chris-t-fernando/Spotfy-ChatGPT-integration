@@ -1168,7 +1168,11 @@ def filter_tracks_with_constraints(
             break
 
     if not final_tracks:
-        raise HTTPError(502, "no tracks available after applying exclusions")
+        raise HTTPError(
+            502,
+            "no tracks available after applying exclusions",
+            {"reason": "no_tracks_available_after_exclusions"},
+        )
 
     if len(final_tracks) < track_count:
         log(
@@ -1777,6 +1781,7 @@ def process_scheduled_event() -> Dict[str, Any]:
             "rotation_cursor": rotation_cursor,
             "rotation_length": rotation_length,
             "previous_subgenre": previous_subgenre,
+            "rotation_themes": rotation_themes,
         }
         job_contexts.append(job_context)
 
@@ -1819,6 +1824,7 @@ def process_scheduled_event() -> Dict[str, Any]:
         prompt_hash = sha256_hash(prompt_text)
         job_context["prompt_hash"] = prompt_hash
         job_context["prompt_text"] = prompt_text
+        job_context["extra_instructions"] = extra_instructions
 
         job_token = JOB_ID_VAR.set(job_id or "")
         log(
@@ -1917,7 +1923,6 @@ def process_scheduled_event() -> Dict[str, Any]:
                 }
             )
         except HTTPError as exc:
-            failed += 1
             log(
                 "warning",
                 "Scheduled playlist regeneration failed",
@@ -1926,6 +1931,8 @@ def process_scheduled_event() -> Dict[str, Any]:
                 status=exc.status_code,
             )
             reason = (exc.details or {}).get("reason")
+            if not reason and exc.message == "no tracks available after applying exclusions":
+                reason = "no_tracks_available_after_exclusions"
             if reason == "openai_rate_limited":
                 deferred += 1
                 retry_after_s = _to_int((exc.details or {}).get("retry_after_s"), 60)
@@ -1953,8 +1960,62 @@ def process_scheduled_event() -> Dict[str, Any]:
                     duration_ms=duration_ms,
                     error_category=reason,
                 )
+                continue
+            if reason == "no_tracks_available_after_exclusions":
+                try:
+                    retry_spec = prepare_spec_for_next_theme(job)
+                except HTTPError as retry_exc:
+                    log(
+                        "warning",
+                        "Retry preparation failed",
+                        playlist_id=playlist_id,
+                        message=retry_exc.message,
+                    )
+                    retry_spec = None
+                if retry_spec:
+                    try:
+                        retry_start = time.perf_counter()
+                        job_result = run_scheduled_playlist(job, retry_spec, table)
+                        succeeded += 1
+                        advance_rotation_cursor(
+                            table,
+                            playlist_id,
+                            job.get("rotation_cursor", 0),
+                            job.get("rotation_length", 0),
+                        )
+                        duration_ms = int((time.perf_counter() - retry_start) * 1000)
+                        log(
+                            "info",
+                            "scheduled_job_complete",
+                            playlist_id=playlist_id,
+                            job_id=job_id,
+                            outcome="succeeded",
+                            duration_ms=duration_ms,
+                            retry_mode="next_theme",
+                        )
+                        results.append(
+                            {
+                                "playlist_id": playlist_id,
+                                "job_id": job_id,
+                                "genre": job_result.get("genre"),
+                                "selected_subgenre": job_result.get("selected_subgenre"),
+                                "prompt_hash": job_result.get("prompt_hash"),
+                                "outcome": "succeeded",
+                                "retry_mode": "next_theme",
+                            }
+                        )
+                        continue
+                    except HTTPError as retry_exc:
+                        log(
+                            "warning",
+                            "Retry with next theme failed",
+                            playlist_id=playlist_id,
+                            message=retry_exc.message,
+                            status=retry_exc.status_code,
+                        )
+                        exc = retry_exc
+                        reason = (retry_exc.details or {}).get("reason") or reason
             else:
-                failed += 1
                 status_code = getattr(exc, "status_code", 500)
                 error_category = reason or exc.message
                 failures.append(
@@ -1988,6 +2049,8 @@ def process_scheduled_event() -> Dict[str, Any]:
                     error_category=error_category,
                     status_code=status_code,
                 )
+                continue
+            failed += 1
         except Exception as exc:  # pylint: disable=broad-except
             failed += 1
             log(
@@ -2282,3 +2345,45 @@ def run_scheduled_playlist(
         "selected_subgenre": theme_name,
         "genre": genre,
     }
+
+
+def prepare_spec_for_next_theme(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    rotation_length = job.get("rotation_length", 0)
+    themes = job.get("rotation_themes") or []
+    if rotation_length <= 1 or not themes:
+        return None
+    next_index = (job.get("rotation_index") or 0) + 1
+    next_index %= rotation_length
+    theme = themes[next_index] if next_index < len(themes) else None
+    if not isinstance(theme, dict):
+        return None
+    theme_name = theme.get("name")
+    theme_prompt = theme.get("prompt")
+    prompt_target = job.get("prompt_track_target") or job.get("track_count") or 50
+    prompt_text = build_scheduled_prompt(
+        job.get("base_prompt") or "",
+        prompt_target,
+        list(job.get("exclude_track_keys", [])),
+        list(job.get("exclude_artist_keys", [])),
+        theme_prompt=theme_prompt,
+        extra_instructions=job.get("extra_instructions"),
+    )
+    prompt_hash = sha256_hash(prompt_text)
+    job["theme_name"] = theme_name
+    job["prompt_text"] = prompt_text
+    job["prompt_hash"] = prompt_hash
+    job["rotation_index"] = next_index
+    job["rotation_cursor"] = next_index
+    job["playlist_name"] = build_playlist_display_name(
+        job.get("template_name") or "", theme_name
+    )
+    log(
+        "info",
+        "scheduled_retry_next_theme",
+        playlist_id=job.get("playlist_id"),
+        job_id=job.get("job_id"),
+        next_theme=theme_name,
+        prompt_hash=prompt_hash,
+    )
+    spec = request_playlist_spec(prompt_text, allow_rate_limit_retries=False)
+    return spec
