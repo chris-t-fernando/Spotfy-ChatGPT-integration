@@ -28,6 +28,12 @@ variable "lambda_reserved_concurrency" {
   default     = 1
 }
 
+variable "scheduled_openai_max_attempts" {
+  description = "Maximum retries for scheduled OpenAI batch requests"
+  type        = number
+  default     = 1
+}
+
 variable "tags" {
   description = "Common tags"
   type        = map(string)

@@ -1,0 +1,155 @@
+{
+    "playlist_id": {
+        "S": "to_be_created#hiphop"
+    },
+    "enabled": {
+        "BOOL": true
+    },
+    "config_name": {
+        "S": "Daily - Hip Hop"
+    },
+    "base_prompt": {
+        "S": "Curate a playlist of hip hop tracks."
+    },
+    "rotation_themes": {
+        "L": [
+            {
+                "M": {
+                    "name": {
+                        "S": "90s melodic"
+                    },
+                    "prompt": {
+                        "S": "Focus on 90s melodic hip hop: warm boom-bap drums, soulful hooks, smooth flows, and feel-good grooves. Prioritise classic-era artists and deep cuts; avoid aggressive/gangsta extremes."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Boom Bap"
+                    },
+                    "prompt": {
+                        "S": "Classic boom bap: hard but not harsh—crisp snares, dusty samples, head-nod tempo, lyrical focus. Mix iconic staples with underground gems; minimise trap-style hi-hats and EDM crossover."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Jazz Rap"
+                    },
+                    "prompt": {
+                        "S": "Jazz rap: upright bass, Rhodes keys, sax/trumpet, brushed drums, swing-inflected grooves. Keep it laid-back and sophisticated; blend classics with modern jazz-leaning cuts."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Conscious / Political"
+                    },
+                    "prompt": {
+                        "S": "Conscious hip hop: thoughtful, uplifting, socially aware lyrics with soulful production. Keep the energy positive-to-reflective; avoid shock-rap and overly dark themes."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Alternative / Indie Hip Hop"
+                    },
+                    "prompt": {
+                        "S": "Alternative/indie hip hop: left-field production, creative arrangements, off-kilter but listenable. Include tasteful experimental cuts without going full noise/industrial; avoid EDM bangers."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Lo-fi Hip Hop"
+                    },
+                    "prompt": {
+                        "S": "Lo-fi hip hop: mellow beats, tape hiss, soft chords, minimal vocals (instrumentals welcome). Keep it calming and consistent; avoid high-energy club tracks."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Trap (Chill)"
+                    },
+                    "prompt": {
+                        "S": "Chill trap: modern 808s and rolling hats but smooth/airy, not abrasive. Prefer melodic hooks, restrained aggression, and mid-tempo bounce; avoid rage/hypertrap and screamo-adjacent vocals."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Southern / Crunk-to-Modern"
+                    },
+                    "prompt": {
+                        "S": "Southern hip hop: bounce, swagger, and groove from classic southern sounds through modern, but keep it party-fun rather than chaotic. Mix recognisable anthems with tasteful deep cuts."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "West Coast (G-Funk & Modern)"
+                    },
+                    "prompt": {
+                        "S": "West Coast: G-funk synth leads, funky basslines, sunny cruising energy plus modern west-coast bounce. Keep it smooth and confident; avoid overly violent/drill-adjacent cuts."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "UK Hip Hop / Grime (Accessible)"
+                    },
+                    "prompt": {
+                        "S": "UK hip hop + accessible grime: sharp flows, crisp rhythms, but keep it approachable. Prefer groove and charisma over abrasive aggressiveness; include a few classics and modern standouts."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Drill (Melodic / Low Aggro)"
+                    },
+                    "prompt": {
+                        "S": "Melodic drill: sliding 808s and modern drum patterns with strong melodies and controlled intensity. Keep it more atmospheric than threatening; avoid ultra-violent lyrics where possible."
+                    }
+                }
+            }
+        ]
+    },
+    "window_days": {
+        "N": "14"
+    },
+    "track_count": {
+        "N": "50"
+    },
+    "max_tracks_per_artist": {
+        "N": "1"
+    },
+    "max_overlap_yesterday": {
+        "N": "0.35"
+    },
+    "max_overlap_window": {
+        "N": "0.55"
+    },
+    "min_new_artists_window": {
+        "N": "0.6"
+    },
+    "max_attempts": {
+        "N": "4"
+    },
+    "history_entries": {
+        "L": []
+    },
+    "rotation_cursor": {
+        "N": "0"
+    }
+}

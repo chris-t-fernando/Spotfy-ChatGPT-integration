@@ -118,6 +118,7 @@ resource "aws_lambda_function" "playlist" {
       DEFAULT_MARKET              = "AU"
       DEFAULT_PLAYLIST_PUBLIC     = "false"
       HANDLER_TIMEOUT_SECONDS     = tostring(var.lambda_timeout_seconds)
+      SCHEDULED_OPENAI_MAX_ATTEMPTS = tostring(var.scheduled_openai_max_attempts)
     }
   }
 

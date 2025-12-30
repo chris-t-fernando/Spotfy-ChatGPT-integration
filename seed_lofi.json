@@ -5,6 +5,9 @@
   "enabled": {
     "BOOL": true
   },
+  "config_name": {
+    "S": "Daily - Lo-Fi beats"
+  },
   "base_prompt": {
     "S": "Curate chilled lo-fi beats for deep focus with warm textures."
   },

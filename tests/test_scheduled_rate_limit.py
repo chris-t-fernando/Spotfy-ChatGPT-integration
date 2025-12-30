@@ -99,6 +99,7 @@ def test_scheduled_429_deferred_no_retry(monkeypatch):
         {
             "playlist_id": "pl1",
             "base_prompt": "Curate focus tracks",
+            "config_name": "Focus Set",
             "history_entries": [],
             "enabled": True,
         }
@@ -139,6 +140,7 @@ def test_scheduled_skips_within_backoff(monkeypatch):
         {
             "playlist_id": "pl2",
             "base_prompt": "Upbeat mix",
+            "config_name": "Upbeat Mix",
             "history_entries": [],
             "enabled": True,
             "next_eligible_at_epoch": future_epoch,
@@ -168,6 +170,7 @@ def test_ensure_playlist_id_creates_when_blank(monkeypatch):
         "playlist_id": "to_be_created#lofi",
         "base_prompt": "Focus vibes",
         "base_name": "Auto Focus",
+        "config_name": "LoFi Focus",
         "history_entries": [],
         "enabled": True,
     }
@@ -183,7 +186,7 @@ def test_ensure_playlist_id_creates_when_blank(monkeypatch):
         },
     )
 
-    new_id = app.ensure_playlist_id(table, item, "")
+    new_id = app.ensure_playlist_id(table, item, "", "LoFi Focus", None)
     assert new_id == "new123"
     assert item["playlist_id"] == "new123"
     assert table.put_calls and table.put_calls[0]["playlist_id"] == "new123"

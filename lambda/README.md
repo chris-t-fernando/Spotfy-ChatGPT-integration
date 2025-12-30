@@ -70,11 +70,13 @@ Terraform also provisions:
 Start with at least one playlist configuration. Example (Lo-fi Study with seven rotating sub-genres):
 - `playlist_id` can be a placeholder formatted as `to_be_created#<slug>`. The Lambda will create the playlist on the first scheduled run, persist the real Spotify playlist id back into DynamoDB, and delete the placeholder entry.
 - Include `rotation_cursor` (initially `"0"`) so the Lambda can remember which sub-genre runs next.
+- Every template **must** include `config_name` (e.g., `"lofi"` or `"hiphop"`). During each scheduled run the Spotify playlist is renamed to `<config_name> - <current rotation theme>` (or just `<config_name>` when no rotation is defined), so pick a stable, human-friendly name.
 Use DynamoDB attribute-value JSON (every attribute needs a type wrapper):
 ```json
 {
   "playlist_id": {"S": "to_be_created#lofi_focus"},
   "enabled": {"BOOL": true},
+  "config_name": {"S": "lofi"},
   "base_prompt": {"S": "Curate chilled lo-fi beats for deep focus with warm textures."},
   "rotation_themes": {
     "L": [
@@ -106,10 +108,21 @@ aws dynamodb put-item \
 ```
 Repeat for each playlist you want auto-rotated. Set `enabled=false` to pause.
 
+### Field reference
+- `window_days`: Size of the historical window used to compute novelty metrics and exclusion sets. Larger windows block reusing artists/tracks for longer, increasing freshness at the cost of OpenAI/Spotify matches.
+- `track_count`: Target number of tracks to publish. We request more than this from OpenAI to account for filtering, but the playlist is trimmed to exactly `track_count` when possible.
+- `max_tracks_per_artist`: Hard cap on how many tracks from the same artist can appear in a single scheduled run.
+- `max_overlap_yesterday`: Max proportion (0–1) of today’s URIs that can overlap with the previous day’s URIs before the result is considered out-of-guardrail (logged as a warning).
+- `max_overlap_window`: Same as above but measured against the last `window_days` entries.
+- `min_new_artists_window`: Minimum fraction of artists that must be new compared to the rolling window. Raising this value forces more novel artists and can increase `artist_blocked` exclusions.
+- `history_entries`: Rolling log of previous runs (auto-maintained). Do not edit manually unless seeding initial history.
+- `rotation_cursor`: Pointer used to select the next entry in `rotation_themes`. The Lambda updates this automatically after each successful run.
+
 ### 2. How scheduling works
 - EventBridge calls the Lambda once per day (`{"scheduled":true}`).
 - Lambda scans `playlistbot_state` for `enabled=true` entries, determines the rotation theme for the day, and regenerates the Spotify playlist by `playlist_id`.
 - Novelty guards enforce rolling no-repeat windows, maximum overlap, and minimum new artist ratios. Exclusions are passed into OpenAI prompts and enforced post-generation.
+- OpenAI retries for scheduled runs are controlled via the Terraform variable `scheduled_openai_max_attempts` (default `1`). Bump this to `2`+ if the OpenAI API is intermittently unavailable and you want additional automatic retries.
 
 ### 3. Adding/changing sub-genres (rotation themes)
 - Add additional objects in `rotation_themes`. The Lambda picks them deterministically using `(YYYYMMDD % len(rotation_themes))`, ensuring a predictable cycle.

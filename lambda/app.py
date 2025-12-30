@@ -121,6 +121,20 @@ ENV_CONFIG = {
 }
 
 
+def _clean_string(value: Optional[str]) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def build_playlist_display_name(template_name: str, subgenre: Optional[str]) -> str:
+    base = _clean_string(template_name)
+    if not base:
+        raise ValueError("template_name is required")
+    sub = _clean_string(subgenre)
+    return f"{base} - {sub}" if sub else base
+
+
 def log(level: str, msg: str, **details: Any) -> None:
     prefix = {
         "info": "[info]",
@@ -421,6 +435,15 @@ def request_playlist_spec(
         log("critical", "Unexpected OpenAI response", response=resp.text)
         raise HTTPError(502, "invalid response from OpenAI") from exc
 
+    log(
+        "info",
+        "openai_playlist_spec",
+        call_type="single",
+        prompt_hash=prompt_hash,
+        track_count=len(spec.get("tracks") or []),
+        spec=spec,
+    )
+
     validate_spec(spec)
     return spec
 
@@ -527,6 +550,14 @@ def request_batch_playlist_specs(
         playlist_id = item.get("playlist_id")
         if isinstance(playlist_id, str):
             mapped[playlist_id] = item
+            log(
+                "info",
+                "openai_playlist_spec",
+                call_type="batch",
+                playlist_id=playlist_id,
+                track_count=len(item.get("tracks") or []),
+                spec=item,
+            )
 
     return mapped
 
@@ -737,6 +768,22 @@ def create_playlist(
     return resp
 
 
+def update_playlist_metadata(
+    access_token: str,
+    playlist_id: str,
+    name: str,
+    description: Optional[str],
+) -> None:
+    payload: Dict[str, Any] = {
+        "name": name,
+        "public": ENV_CONFIG["default_playlist_public"],
+    }
+    if isinstance(description, str):
+        payload["description"] = description
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}"
+    spotify_put(url, access_token, json_body=payload)
+
+
 def resolve_track_uris(
     access_token: str, tracks: List[Dict[str, str]], market: str
 ) -> Tuple[List[str], List[str]]:
@@ -759,6 +806,15 @@ def resolve_track_uris(
             uris.append(best_uri)
         else:
             unmatched.append(f"{track['artist']} – {track['title']}")
+
+    log(
+        "info",
+        "spotify_track_resolution",
+        requested=len(tracks or []),
+        matched=len(uris),
+        unmatched=len(unmatched),
+        unmatched_tracks=unmatched,
+    )
 
     return uris, unmatched
 
@@ -1076,19 +1132,31 @@ def filter_tracks_with_constraints(
     track_block = set(exclude_track_keys)
     artist_block = set(exclude_artist_keys)
     artist_counts: Dict[str, int] = defaultdict(int)
+    exclusion_log: Dict[str, List[str]] = defaultdict(list)
+
+    def record_exclusion(reason: str, track: Dict[str, str]) -> None:
+        artist = (track.get("artist") or "").strip() or "unknown artist"
+        title = (track.get("title") or "").strip() or "unknown title"
+        label = f"{artist} – {title}"
+        if len(exclusion_log[reason]) < 50:
+            exclusion_log[reason].append(label)
 
     for track in tracks or []:
         artist = track.get("artist")
         title = track.get("title")
         if not artist or not title:
+            record_exclusion("missing_fields", track)
             continue
         track_key = _track_key(artist, title)
         artist_key = _artist_key(artist)
         if track_key in track_block:
+            record_exclusion("duplicate_track", track)
             continue
         if artist_key in artist_block:
+            record_exclusion("artist_blocked", track)
             continue
         if artist_counts[artist_key] >= max_tracks_per_artist:
+            record_exclusion("artist_quota_reached", track)
             continue
 
         final_tracks.append({"artist": artist.strip(), "title": title.strip()})
@@ -1109,6 +1177,22 @@ def filter_tracks_with_constraints(
             requested=track_count,
             produced=len(final_tracks),
         )
+    exclusion_summary = [
+        {
+            "reason": reason,
+            "count": len(entries),
+            "samples": entries[:10],
+        }
+        for reason, entries in exclusion_log.items()
+    ]
+    log(
+        "info",
+        "track_filtering_summary",
+        considered=len(tracks or []),
+        requested=track_count,
+        produced=len(final_tracks),
+        exclusion_summary=exclusion_summary,
+    )
 
     return final_tracks
 
@@ -1155,7 +1239,13 @@ def fetch_next_eligible_epoch(table: Any, playlist_id: str) -> Optional[int]:
     return _to_int(item.get("next_eligible_at_epoch"), 0)
 
 
-def ensure_playlist_id(table: Any, item: Dict[str, Any], playlist_id: Optional[str]) -> str:
+def ensure_playlist_id(
+    table: Any,
+    item: Dict[str, Any],
+    playlist_id: Optional[str],
+    template_name: str,
+    theme_name: Optional[str],
+) -> str:
     pending = False
     if playlist_id and not playlist_id.startswith(PENDING_PLAYLIST_PREFIX):
         return playlist_id
@@ -1164,12 +1254,7 @@ def ensure_playlist_id(table: Any, item: Dict[str, Any], playlist_id: Optional[s
 
     access_token = refresh_spotify_access_token()
     user = fetch_spotify_user(access_token)
-    base_name = (
-        item.get("base_name")
-        or item.get("playlist_name")
-        or item.get("config_name")
-        or f"PlaylistBot {datetime.now(tz=TIMEZONE).strftime('%Y-%m-%d %H:%M')}"
-    )
+    base_name = build_playlist_display_name(template_name, theme_name)
     description = item.get("base_prompt")
     playlist = create_playlist(
         access_token, user["id"], base_name, description if isinstance(description, str) else None
@@ -1561,23 +1646,24 @@ def process_scheduled_event() -> Dict[str, Any]:
         processed += 1
         playlist_id = item.get("playlist_id")
         base_prompt = item.get("base_prompt")
+        template_name = _clean_string(item.get("config_name"))
         job_id = f"{playlist_id}:{RUN_ID_VAR.get()}" if playlist_id else RUN_ID_VAR.get()
         history_entries = item.get("history_entries") or []
-        playlist_name = (
-            item.get("base_name")
-            or item.get("playlist_name")
-            or item.get("config_name")
-            or playlist_id
-        )
         genre = item.get("genre") or item.get("base_genre") or "unspecified"
         previous_subgenre = history_entries[-1].get("selected_subgenre") if history_entries else None
         rotation_themes = item.get("rotation_themes") or []
-
+        missing_fields = []
+        if not playlist_id:
+            missing_fields.append("playlist_id")
         if not base_prompt:
+            missing_fields.append("base_prompt")
+        if not template_name:
+            missing_fields.append("config_name")
+        if missing_fields:
             failed += 1
             log(
                 "warning",
-                "Scheduled item missing playlist_id or base_prompt",
+                "Scheduled item missing required fields",
                 item=item,
             )
             log(
@@ -1603,11 +1689,26 @@ def process_scheduled_event() -> Dict[str, Any]:
                     "prompt_hash": None,
                     "outcome": "failed",
                     "error_category": "invalid_config",
-                    "error_message": "missing playlist_id or base_prompt",
+                    "error_message": f"missing {', '.join(missing_fields)}",
                 }
             )
             continue
-        playlist_id = ensure_playlist_id(table, item, playlist_id)
+        rotation_length = len(rotation_themes)
+        rotation_cursor = _to_int(item.get("rotation_cursor"), 0)
+        rotation_index = None
+        theme_prompt = None
+        theme_name = None
+        if rotation_length:
+            rotation_index = rotation_cursor % rotation_length
+            theme = rotation_themes[rotation_index]
+            if isinstance(theme, dict):
+                theme_name = theme.get("name")
+                theme_prompt = theme.get("prompt")
+        playlist_display_name = build_playlist_display_name(template_name, theme_name)
+
+        playlist_id = ensure_playlist_id(
+            table, item, playlist_id, template_name, theme_name
+        )
         job_id = f"{playlist_id}:{RUN_ID_VAR.get()}"
 
         next_eligible_epoch = _to_int(item.get("next_eligible_at_epoch"), 0)
@@ -1651,22 +1752,13 @@ def process_scheduled_event() -> Dict[str, Any]:
         yesterday_entry = history_entries[-1] if history_entries else None
         yesterday_uris = set(yesterday_entry.get("uris", [])) if yesterday_entry else set()
 
-        theme_prompt = None
-        theme_name = None
-        rotation_index = None
-        rotation_length = len(rotation_themes)
-        rotation_cursor = _to_int(item.get("rotation_cursor"), 0)
-        if rotation_length:
-            rotation_index = rotation_cursor % rotation_length
-            theme = rotation_themes[rotation_index]
-            theme_name = theme.get("name")
-            theme_prompt = theme.get("prompt")
-
         job_context = {
             "playlist_id": playlist_id,
             "job_id": job_id,
-            "playlist_name": playlist_name,
+            "playlist_name": playlist_display_name,
             "genre": genre,
+            "template_name": template_name,
+            "base_prompt": base_prompt,
             "history_entries": history_entries,
             "window_days": window_days,
             "track_count": track_count,
@@ -1693,7 +1785,7 @@ def process_scheduled_event() -> Dict[str, Any]:
             "info",
             "scheduled_job_context",
             playlist_id=playlist_id,
-            playlist_name=playlist_name,
+            playlist_name=playlist_display_name,
             genre=genre,
             previous_subgenre=previous_subgenre,
             selected_subgenre=theme_name,
@@ -2085,6 +2177,8 @@ def run_scheduled_playlist(
     yesterday_uris = job.get("yesterday_uris", set())
     theme_name = job.get("theme_name")
     prompt_hash = job.get("prompt_hash")
+    template_name = job.get("template_name") or ""
+    base_prompt = job.get("base_prompt")
 
     filtered_tracks = filter_tracks_with_constraints(
         spec.get("tracks"),
@@ -2109,6 +2203,33 @@ def run_scheduled_playlist(
     )
 
     playlist_data = fetch_playlist_by_id(access_token, playlist_id)
+    desired_playlist_name: Optional[str] = None
+    try:
+        desired_playlist_name = build_playlist_display_name(template_name, theme_name)
+    except ValueError:
+        desired_playlist_name = playlist_name
+    if desired_playlist_name and playlist_data.get("name") != desired_playlist_name:
+        description_text = spec.get("description") or (
+            base_prompt if isinstance(base_prompt, str) else None
+        )
+        try:
+            update_playlist_metadata(
+                access_token,
+                playlist_id,
+                desired_playlist_name,
+                description_text,
+            )
+            playlist_data["name"] = desired_playlist_name
+            playlist_name = desired_playlist_name
+        except Exception as exc:  # pylint: disable=broad-except
+            log(
+                "warning",
+                "Failed to update playlist metadata",
+                playlist_id=playlist_id,
+                error=str(exc),
+            )
+    else:
+        playlist_name = playlist_data.get("name")
     playlist_url = playlist_data.get("external_urls", {}).get("spotify")
 
     replace_playlist_contents(access_token, playlist_id, uris)
