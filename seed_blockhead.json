@@ -1,0 +1,122 @@
+{
+    "playlist_id": {
+        "S": "to_be_created#blockhead_adjacent"
+    },
+    "enabled": {
+        "BOOL": true
+    },
+    "base_prompt": {
+        "S": "Curate an instrumental, sample-driven hip hop playlist in the vein of Blockhead: cinematic, dusty, and emotionally grounded beats."
+    },
+    "rotation_themes": {
+        "L": [
+            {
+                "M": {
+                    "name": {
+                        "S": "Dusty Boom-Bap Instrumentals"
+                    },
+                    "prompt": {
+                        "S": "Instrumental boom-bap with dusty samples, chopped soul and jazz loops, warm basslines, and head-nod tempos. Prioritise narrative flow over raw aggression; avoid vocal hooks and trap percussion."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Cinematic Loops"
+                    },
+                    "prompt": {
+                        "S": "Cinematic instrumental hip hop: moody chord progressions, subtle strings, piano motifs, and evolving loops that feel like film cues. Keep it immersive and unhurried."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Melancholic Street Jazz"
+                    },
+                    "prompt": {
+                        "S": "Melancholic jazz-hop instrumentals: minor-key jazz samples, brushed drums, upright bass, and late-night urban atmosphere. Focus on emotional restraint rather than nostalgia gimmicks."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Abstract Storytelling Beats"
+                    },
+                    "prompt": {
+                        "S": "Abstract but accessible instrumentals that suggest a story: off-kilter samples, imperfect loops, vinyl artefacts, and restrained experimentation. Avoid harsh noise or extreme tempo changes."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Downtempo Noir"
+                    },
+                    "prompt": {
+                        "S": "Downtempo noir beats: slow breakbeats, deep bass, shadowy textures, and sparse melodic phrases. Think late-night city walks rather than club energy."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Sample Collage"
+                    },
+                    "prompt": {
+                        "S": "Sample-collage instrumentals: layered snippets from film, soul, and obscure records, tastefully arranged into cohesive grooves. Keep it musical and emotional, not chaotic."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Warm Tape Saturation"
+                    },
+                    "prompt": {
+                        "S": "Warm, tape-saturated instrumentals with gentle compression, soft edges, and analogue character. Avoid overly clean modern mixes or EDM loudness."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Lo-Fi Narrative Drift"
+                    },
+                    "prompt": {
+                        "S": "Lo-fi narrative beats: understated drums, evolving textures, and a sense of movement across the playlist. Prioritise cohesion and mood over standout singles."
+                    }
+                }
+            }
+        ]
+    },
+    "window_days": {
+        "N": "14"
+    },
+    "track_count": {
+        "N": "50"
+    },
+    "max_tracks_per_artist": {
+        "N": "1"
+    },
+    "max_overlap_yesterday": {
+        "N": "0.35"
+    },
+    "max_overlap_window": {
+        "N": "0.55"
+    },
+    "min_new_artists_window": {
+        "N": "0.6"
+    },
+    "max_attempts": {
+        "N": "4"
+    },
+    "history_entries": {
+        "L": []
+    },
+    "rotation_cursor": {
+        "N": "0"
+    }
+}

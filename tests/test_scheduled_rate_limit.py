@@ -294,22 +294,19 @@ def test_retry_next_theme_when_tracks_excluded(monkeypatch):
         "tracks": [{"artist": "ArtistB", "title": "SongB"}],
     }
 
-    monkeypatch.setattr(
-        app,
-        "request_batch_playlist_specs",
-        lambda jobs, **_: {"pl_retry": batch_spec},
-    )
-    monkeypatch.setattr(
-        app,
-        "request_playlist_spec",
-        lambda prompt, allow_rate_limit_retries=False: retry_spec,
-    )
+    spec_calls = {"count": 0}
 
-    call_state = {"count": 0}
+    def fake_request_playlist_spec(prompt, allow_rate_limit_retries=False):
+        spec_calls["count"] += 1
+        return batch_spec if spec_calls["count"] == 1 else retry_spec
+
+    monkeypatch.setattr(app, "request_playlist_spec", fake_request_playlist_spec)
+
+    filter_state = {"count": 0}
 
     def fake_filter(*args, **kwargs):
-        if call_state["count"] == 0:
-            call_state["count"] += 1
+        if filter_state["count"] == 0:
+            filter_state["count"] += 1
             raise app.HTTPError(
                 502,
                 "no tracks available after applying exclusions",

@@ -38,6 +38,7 @@ class _MissingBoto3Object:
         self._service = service_name
         exceptions_cls = type("exceptions", (), {})
         if service_name == "ssm":
+
             class ParameterNotFound(Exception):
                 """Raised when an SSM parameter is missing."""
 
@@ -70,6 +71,7 @@ def _create_boto3_resource(service_name: str) -> Any:
     except Exception:
         return _MissingBoto3Object("resource", service_name)
 
+
 VENDOR_DIR = os.path.join(os.path.dirname(__file__), "vendor")
 if VENDOR_DIR not in sys.path and os.path.isdir(VENDOR_DIR):
     sys.path.append(VENDOR_DIR)
@@ -92,10 +94,29 @@ VALID_MODES = {"create", "update", "auto"}
 SSM_CACHE_TTL_SECONDS = int(os.environ.get("SSM_CACHE_TTL_SECONDS", "300"))
 MAX_PLAYLIST_PAGES = int(os.environ.get("MAX_PLAYLIST_PAGES", "20"))
 PROMPT_VERSION = "rotation-v1"
-BATCH_PROMPT_VERSION = "batch-v1"
 OPENAI_TRANSPORT: Optional[Callable[[Dict[str, Any]], requests.Response]] = None
 HTTP_BACKOFF_KEY = "__http_backoff__"
 PENDING_PLAYLIST_PREFIX = "to_be_created#"
+VARIATION_GUIDANCE = """# Variation
+For this run, select exactly ONE variation axis from the list below and apply it consistently:
+- Era emphasis
+- Mood shift
+- Production style
+- Energy contour
+- Cultural/geographic lens
+- Instrumentation focus
+- Artist-adjacency (related but non-obvious artists)
+
+State the chosen axis internally, but do not mention it in the output.
+
+# Controlled randomness
+Apply controlled randomness using the following weights:
+- 60% core genre staples
+- 25% adjacent / crossover tracks
+- 10% deep cuts or B-sides
+- 5% left-field but compatible tracks
+
+Do not exceed these proportions."""
 
 RUN_ID_VAR: ContextVar[str] = ContextVar("run_id", default="")
 JOB_ID_VAR: ContextVar[str] = ContextVar("job_id", default="")
@@ -117,7 +138,9 @@ ENV_CONFIG = {
     "retry_safety_margin_ms": int(os.environ.get("RETRY_SAFETY_MARGIN_MS", "5000")),
     "min_request_budget_ms": int(os.environ.get("MIN_REQUEST_BUDGET_MS", "8000")),
     "handler_timeout_seconds": int(os.environ.get("HANDLER_TIMEOUT_SECONDS", "600")),
-    "scheduled_openai_max_attempts": int(os.environ.get("SCHEDULED_OPENAI_MAX_ATTEMPTS", "1")),
+    "scheduled_openai_max_attempts": int(
+        os.environ.get("SCHEDULED_OPENAI_MAX_ATTEMPTS", "1")
+    ),
 }
 
 
@@ -184,9 +207,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     invocation_type = (
         "scheduled"
         if is_scheduled_event(event)
-        else "http"
-        if is_apigw_http_event(event)
-        else "unknown"
+        else "http" if is_apigw_http_event(event) else "unknown"
     )
     log(
         "info",
@@ -300,7 +321,6 @@ def process_event(event: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(prompt, str) or not (1 <= len(prompt) <= 500):
         raise HTTPError(400, "prompt must be a string between 1 and 500 characters")
 
-
     mode_raw = payload.get("mode", "auto")
     if mode_raw is None:
         mode_raw = "auto"
@@ -322,9 +342,7 @@ def process_event(event: Dict[str, Any]) -> Dict[str, Any]:
     playlist_id_raw = payload.get("playlist_id")
     if playlist_id_raw is not None and not isinstance(playlist_id_raw, str):
         raise HTTPError(400, "playlist_id must be a string when provided")
-    playlist_id = (
-        playlist_id_raw.strip() if isinstance(playlist_id_raw, str) else None
-    )
+    playlist_id = playlist_id_raw.strip() if isinstance(playlist_id_raw, str) else None
     if playlist_id == "":
         playlist_id = None
 
@@ -384,6 +402,7 @@ def request_playlist_spec(
             prompt_length_chars=len(prompt),
             attempt=attempt,
         )
+
     payload = {
         "model": "gpt-4o-mini",
         "response_format": {"type": "json_object"},
@@ -393,9 +412,28 @@ def request_playlist_spec(
                 "role": "system",
                 "content": (
                     """You are a music director that produces structured Spotify playlists.
-                    Respond ONLY with strict JSON using the schema: {\\"base_name\\", \\"description\\", \\"tracks\\"}. 
-                    Each track must include artist and title fields. Generate 30-60 original tracks, avoid duplicates, remixes unless asked, 
-                    skip tribute/karaoke/cover versions, and keep a coherent energy arc for the provided prompt."""
+Respond ONLY with strict JSON using the schema: {\\"base_name\\", \\"description\\", \\"variation_axis\\", \\"tracks\\"}. 
+Each track must include artist and title fields. 
+Rules:
+- Generate 50–60 unique tracks.
+- Each track must include "artist" and "title".
+- No duplicates.
+- No remixes, edits, live versions, covers, karaoke, or tribute tracks unless explicitly requested.
+- Maintain a coherent energy arc across the playlist.
+
+Variation:
+- Select exactly ONE variation axis per run.
+- Choose the axis and its specific lens randomly.
+- Apply it consistently throughout the playlist.
+- Do not mention the axis or lens in the output.
+
+Allowed variation axes:
+- era emphasis
+- production style
+- geography / cultural lens
+- energy contour
+Avoid obvious or overused artists unless they are essential to the genre.
+Prefer deep cuts and adjacent artists over canonical hits."""
                 ),
             },
             {"role": "user", "content": prompt},
@@ -446,120 +484,6 @@ def request_playlist_spec(
 
     validate_spec(spec)
     return spec
-
-
-def request_batch_playlist_specs(
-    batch_jobs: List[Dict[str, Any]],
-    *,
-    transport: Optional[Callable[[Dict[str, Any]], requests.Response]] = None,
-    max_attempts: Optional[int] = None,
-) -> Dict[str, Dict[str, Any]]:
-    if not batch_jobs:
-        return {}
-
-    api_key = get_secure_parameter("openai_api_key_param")
-    payload_body = {"jobs": batch_jobs}
-    jobs_text = json.dumps(payload_body, ensure_ascii=False)
-    prompt_hash = sha256_hash(jobs_text)
-    log(
-        "info",
-        "openai_batch_request_metadata",
-        model="gpt-4o-mini",
-        prompt_version=BATCH_PROMPT_VERSION,
-        prompt_hash=prompt_hash,
-        prompt_length_chars=len(jobs_text),
-        playlist_count=len(batch_jobs),
-        playlist_ids=[job.get("playlist_id") for job in batch_jobs],
-    )
-    def log_call(attempt: int) -> None:
-        log(
-            "info",
-            "openai_api_call",
-            call_type="batch",
-            prompt_hash=prompt_hash,
-            prompt_length_chars=len(jobs_text),
-            playlist_count=len(batch_jobs),
-            attempt=attempt,
-        )
-    system_message = (
-        "You are a music director that returns ONLY strict JSON. "
-        'The JSON schema is {"results":[{"playlist_id","base_name","description","tracks"}]}. '
-        "Each track must contain artist and title. Avoid duplicates, covers, karaoke, or tribute versions."
-    )
-    user_message = (
-        "Process every playlist job in the following JSON payload. "
-        "For each job, follow the provided prompt text and generate between 30-60 tracks. "
-        "Return JSON ONLY with a results array containing one entry per playlist_id.\n"
-        f"{jobs_text}"
-    )
-    payload = {
-        "model": "gpt-4o-mini",
-        "response_format": {"type": "json_object"},
-        "temperature": 0.55,
-        "messages": [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": user_message},
-        ],
-    }
-
-    def _make_request() -> requests.Response:
-        if transport:
-            return transport(payload)
-        if OPENAI_TRANSPORT:
-            return OPENAI_TRANSPORT(payload)
-        return REQUEST_SESSION.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            data=json.dumps(payload),
-            timeout=REQUEST_TIMEOUT,
-        )
-
-    attempts = (
-        max_attempts
-        if isinstance(max_attempts, int) and max_attempts > 0
-        else ENV_CONFIG.get("scheduled_openai_max_attempts", 1)
-    )
-    resp = openai_request_with_retries(
-        _make_request,
-        max_attempts=attempts,
-        remaining_time_ms_fn=get_remaining_time_ms,
-        allow_rate_limit_retries=False,
-        log_call=log_call,
-    )
-
-    if resp.status_code >= 400:
-        log("warning", "OpenAI batch request failed", status=resp.status_code, body=resp.text)
-        raise HTTPError(502, "failed to generate playlist batch spec")
-
-    try:
-        content = resp.json()["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-    except (KeyError, ValueError, json.JSONDecodeError) as exc:
-        log("critical", "Unexpected OpenAI batch response", response=resp.text)
-        raise HTTPError(502, "invalid response from OpenAI batch") from exc
-
-    results = parsed.get("results")
-    if not isinstance(results, list):
-        raise HTTPError(502, "invalid response from OpenAI batch")
-
-    mapped: Dict[str, Dict[str, Any]] = {}
-    for item in results:
-        playlist_id = item.get("playlist_id")
-        if isinstance(playlist_id, str):
-            mapped[playlist_id] = item
-            log(
-                "info",
-                "openai_playlist_spec",
-                call_type="batch",
-                playlist_id=playlist_id,
-                track_count=len(item.get("tracks") or []),
-                spec=item,
-            )
-
-    return mapped
 
 
 def validate_spec(spec: Dict[str, Any]) -> None:
@@ -1032,7 +956,7 @@ def persist_refresh_token(param_name: str, value: str) -> None:
 
 
 def parse_spotify_error(
-    payload: Optional[Dict[str, Any]]
+    payload: Optional[Dict[str, Any]],
 ) -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(payload, dict):
         return None, None
@@ -1207,9 +1131,7 @@ def compute_next_eligible_epoch(retry_after_s: int) -> int:
     return int(time.time()) + delay + jitter
 
 
-def set_rate_limit_backoff(
-    table: Any, playlist_id: str, retry_after_s: int
-) -> int:
+def set_rate_limit_backoff(table: Any, playlist_id: str, retry_after_s: int) -> int:
     next_epoch = compute_next_eligible_epoch(retry_after_s)
     table.update_item(
         Key={"playlist_id": playlist_id},
@@ -1261,7 +1183,10 @@ def ensure_playlist_id(
     base_name = build_playlist_display_name(template_name, theme_name)
     description = item.get("base_prompt")
     playlist = create_playlist(
-        access_token, user["id"], base_name, description if isinstance(description, str) else None
+        access_token,
+        user["id"],
+        base_name,
+        description if isinstance(description, str) else None,
     )
     new_playlist_id = playlist["id"]
     item["playlist_id"] = new_playlist_id
@@ -1316,6 +1241,8 @@ def advance_rotation_cursor(
             playlist_id=playlist_id,
             error=str(exc),
         )
+
+
 def build_scheduled_prompt(
     base_prompt: str,
     needed: int,
@@ -1610,6 +1537,8 @@ def sleep_for(seconds: float) -> None:
 
 def sha256_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def process_scheduled_event() -> Dict[str, Any]:
     table_name = ENV_CONFIG.get("playlist_state_table")
     table = DDB_RESOURCE.Table(table_name)
@@ -1644,17 +1573,20 @@ def process_scheduled_event() -> Dict[str, Any]:
     results: List[Dict[str, Any]] = []
     throttle_ms = ENV_CONFIG.get("openai_throttle_ms", 0)
     job_contexts: List[Dict[str, Any]] = []
-    batch_requests: List[Dict[str, Any]] = []
 
     for item in items:
         processed += 1
         playlist_id = item.get("playlist_id")
         base_prompt = item.get("base_prompt")
         template_name = _clean_string(item.get("config_name"))
-        job_id = f"{playlist_id}:{RUN_ID_VAR.get()}" if playlist_id else RUN_ID_VAR.get()
+        job_id = (
+            f"{playlist_id}:{RUN_ID_VAR.get()}" if playlist_id else RUN_ID_VAR.get()
+        )
         history_entries = item.get("history_entries") or []
         genre = item.get("genre") or item.get("base_genre") or "unspecified"
-        previous_subgenre = history_entries[-1].get("selected_subgenre") if history_entries else None
+        previous_subgenre = (
+            history_entries[-1].get("selected_subgenre") if history_entries else None
+        )
         rotation_themes = item.get("rotation_themes") or []
         missing_fields = []
         if not playlist_id:
@@ -1754,7 +1686,9 @@ def process_scheduled_event() -> Dict[str, Any]:
         )
         window_artist_keys = set(exclude_artist_keys)
         yesterday_entry = history_entries[-1] if history_entries else None
-        yesterday_uris = set(yesterday_entry.get("uris", [])) if yesterday_entry else set()
+        yesterday_uris = (
+            set(yesterday_entry.get("uris", [])) if yesterday_entry else set()
+        )
 
         job_context = {
             "playlist_id": playlist_id,
@@ -1813,6 +1747,7 @@ def process_scheduled_event() -> Dict[str, Any]:
                 f"max {max_tracks_per_artist} tracks per artist."
             )
         ]
+        extra_instructions.append(VARIATION_GUIDANCE)
         prompt_text = build_scheduled_prompt(
             base_prompt,
             prompt_needed,
@@ -1839,33 +1774,8 @@ def process_scheduled_event() -> Dict[str, Any]:
         )
         JOB_ID_VAR.reset(job_token)
 
-        batch_requests.append(
-            {
-                "playlist_id": playlist_id,
-                "prompt": prompt_text,
-                "track_count": track_count,
-                "genre": genre,
-                "selected_subgenre": theme_name,
-            }
-        )
-
-    batch_results: Dict[str, Dict[str, Any]] = {}
-    batch_error: Optional[HTTPError] = None
     openai_called = False
     openai_attempts = 0
-    if batch_requests:
-        try:
-            openai_called = True
-            openai_attempts = 1
-            batch_results = request_batch_playlist_specs(batch_requests)
-        except HTTPError as exc:
-            batch_error = exc
-            log(
-                "warning",
-                "OpenAI batch request failed",
-                status=exc.status_code,
-                message=exc.message,
-            )
 
     for idx, job in enumerate(job_contexts, start=1):
         playlist_id = job["playlist_id"]
@@ -1879,22 +1789,19 @@ def process_scheduled_event() -> Dict[str, Any]:
             job_id=job_id,
         )
         try:
-            if batch_error:
+            prompt_text = job.get("prompt_text")
+            if not isinstance(prompt_text, str) or not prompt_text.strip():
                 raise HTTPError(
-                    batch_error.status_code,
-                    batch_error.message,
-                    batch_error.details,
+                    500,
+                    "missing_prompt_text",
+                    {"reason": "missing_prompt_text"},
                 )
 
-            spec_entry = batch_results.get(playlist_id)
-            if not spec_entry:
-                raise HTTPError(
-                    502,
-                    "openai_bad_batch_response",
-                    {"reason": "openai_bad_batch_response"},
-                )
-
-            validate_spec(spec_entry)
+            openai_called = True
+            openai_attempts += 1
+            spec_entry = request_playlist_spec(
+                prompt_text, allow_rate_limit_retries=False
+            )
             job_result = run_scheduled_playlist(job, spec_entry, table)
             succeeded += 1
             duration_ms = int((time.perf_counter() - job_start) * 1000)
@@ -1931,7 +1838,10 @@ def process_scheduled_event() -> Dict[str, Any]:
                 status=exc.status_code,
             )
             reason = (exc.details or {}).get("reason")
-            if not reason and exc.message == "no tracks available after applying exclusions":
+            if (
+                not reason
+                and exc.message == "no tracks available after applying exclusions"
+            ):
                 reason = "no_tracks_available_after_exclusions"
             if reason == "openai_rate_limited":
                 deferred += 1
@@ -1998,7 +1908,9 @@ def process_scheduled_event() -> Dict[str, Any]:
                                 "playlist_id": playlist_id,
                                 "job_id": job_id,
                                 "genre": job_result.get("genre"),
-                                "selected_subgenre": job_result.get("selected_subgenre"),
+                                "selected_subgenre": job_result.get(
+                                    "selected_subgenre"
+                                ),
                                 "prompt_hash": job_result.get("prompt_hash"),
                                 "outcome": "succeeded",
                                 "retry_mode": "next_theme",
@@ -2126,18 +2038,16 @@ def generate_playlist_response(
     playlist_id: Optional[str],
     should_attempt_update: bool,
 ) -> Dict[str, Any]:
+    if VARIATION_GUIDANCE not in prompt:
+        prompt = f"{prompt.rstrip()}\n\n{VARIATION_GUIDANCE}"
     try:
-        spec = request_playlist_spec(
-            prompt, allow_rate_limit_retries=False
-        )
+        spec = request_playlist_spec(prompt, allow_rate_limit_retries=False)
     except HTTPError as exc:
         reason = (exc.details or {}).get("reason") if exc.details else None
         if reason == "openai_rate_limited":
             retry_after_s = _to_int((exc.details or {}).get("retry_after_s"), 60)
             table = DDB_RESOURCE.Table(ENV_CONFIG["playlist_state_table"])
-            next_epoch = set_rate_limit_backoff(
-                table, HTTP_BACKOFF_KEY, retry_after_s
-            )
+            next_epoch = set_rate_limit_backoff(table, HTTP_BACKOFF_KEY, retry_after_s)
             seconds_remaining = max(next_epoch - int(time.time()), 1)
             body = {
                 "error": "openai_rate_limited",

@@ -127,97 +127,6 @@ def test_abort_before_request_when_no_budget():
         app.sleep_for = ORIGINAL_SLEEP
 
 
-def test_batch_request_single_call():
-    original_call = app.openai_request_with_retries
-    original_get_param = app.get_secure_parameter
-
-    class DummyResponse:
-        status_code = 200
-
-        def __init__(self, payload):
-            self._payload = payload
-            self.text = json.dumps(payload)
-
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(self._payload)
-                        }
-                    }
-                ]
-            }
-
-    payload = {
-        "results": [
-            {
-                "playlist_id": "abc",
-                "base_name": "Focus Set",
-                "description": "desc",
-                "tracks": [{"artist": "A", "title": "Song"}],
-            }
-        ]
-    }
-
-    calls = {"count": 0}
-
-    def fake_request(callable_fn, **kwargs):
-        calls["count"] += 1
-        return DummyResponse(payload)
-
-    app.openai_request_with_retries = fake_request
-    app.get_secure_parameter = lambda _: "fake"
-    try:
-        result = app.request_batch_playlist_specs(
-            [{"playlist_id": "abc", "prompt": "do thing", "track_count": 50}]
-        )
-        assert calls["count"] == 1
-        assert "abc" in result and result["abc"]["base_name"] == "Focus Set"
-    finally:
-        app.openai_request_with_retries = original_call
-        app.get_secure_parameter = original_get_param
-
-
-def test_batch_request_missing_ids_ignored():
-    original_call = app.openai_request_with_retries
-    original_get_param = app.get_secure_parameter
-
-    class DummyResponse:
-        status_code = 200
-
-        def __init__(self, payload):
-            self._payload = payload
-            self.text = json.dumps(payload)
-
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(self._payload)
-                        }
-                    }
-                ]
-            }
-
-    payload = {"results": [{"base_name": "x", "description": "", "tracks": []}]}
-
-    def fake_request(callable_fn, **kwargs):
-        return DummyResponse(payload)
-
-    app.openai_request_with_retries = fake_request
-    app.get_secure_parameter = lambda _: "fake"
-    try:
-        result = app.request_batch_playlist_specs(
-            [{"playlist_id": "abc", "prompt": "do thing", "track_count": 50}]
-        )
-        assert result == {}
-    finally:
-        app.openai_request_with_retries = original_call
-        app.get_secure_parameter = original_get_param
-
-
 if __name__ == "__main__":
     test_retry_after_respected()
     test_exponential_backoff_without_retry_after()
@@ -225,6 +134,4 @@ if __name__ == "__main__":
     test_retry_on_500()
     test_abort_when_sleep_exceeds_remaining_time()
     test_abort_before_request_when_no_budget()
-    test_batch_request_single_call()
-    test_batch_request_missing_ids_ignored()
     print("openai_retry tests passed")

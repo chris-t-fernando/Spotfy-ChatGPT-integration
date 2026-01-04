@@ -1,0 +1,142 @@
+{
+    "playlist_id": {
+        "S": "to_be_created#triphop"
+    },
+    "enabled": {
+        "BOOL": true
+    },
+    "base_prompt": {
+        "S": "Curate a playlist of trip hop tracks."
+    },
+    "rotation_themes": {
+        "L": [
+            {
+                "M": {
+                    "name": {
+                        "S": "90s Bristol Core"
+                    },
+                    "prompt": {
+                        "S": "Lean into the classic 90s Bristol sound: smoky downtempo beats, vinyl crackle, moody basslines, and noir atmosphere. Prioritise era-defining staples plus deep cuts; avoid big-beat and EDM crossover."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Noir Lounge"
+                    },
+                    "prompt": {
+                        "S": "Cinematic noir lounge: late-night bar mood, brushed drums, upright bass, sleazy jazz chords, and whispered vocals. Keep it classy and slow-burn; avoid anything too bright or poppy."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Jazz-Hop Drift"
+                    },
+                    "prompt": {
+                        "S": "Jazz-inflected trip hop: dusty jazz samples, Rhodes keys, sax motifs, and head-nod drums. Keep it warm and organic; mix instrumentals with vocal tracks."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Cinematic Tension"
+                    },
+                    "prompt": {
+                        "S": "Soundtrack-like trip hop: suspenseful strings/pads, tight percussion, and dramatic builds. Aim for spy-thriller energy without going industrial or overly aggressive."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Downtempo Dub"
+                    },
+                    "prompt": {
+                        "S": "Dubby downtempo trip hop: deep sub-bass, skanks/echo, spacey delays, and slow breakbeats. Keep it hypnotic and mellow; avoid fast DnB sections."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Sultry Vocal Focus"
+                    },
+                    "prompt": {
+                        "S": "Vocal-forward trip hop: intimate, breathy, emotionally present vocals over minimal beats and moody harmony. Keep it sensual and restrained; avoid mainstream pop ballad vibes."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Abstract / Leftfield"
+                    },
+                    "prompt": {
+                        "S": "Leftfield trip hop: experimental textures, odd samples, and unconventional arrangements—still listenable and groove-led. Avoid harsh noise, extreme industrial, or chaotic breakcore."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Rainy Neon"
+                    },
+                    "prompt": {
+                        "S": "Rain-soaked neon city atmosphere: airy pads, distant synths, echoing snares, and late-night melancholy. Keep tempos downtempo; favour immersive sound design."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Lo-fi Tape Haze"
+                    },
+                    "prompt": {
+                        "S": "Tape-hazy trip hop: mellow breaks, soft saturation, hiss, and nostalgic samples. Keep it cosy and unhurried; avoid modern EDM loudness."
+                    }
+                }
+            },
+            {
+                "M": {
+                    "name": {
+                        "S": "Psychedelic Downtempo"
+                    },
+                    "prompt": {
+                        "S": "Psychedelic downtempo adjacent to trip hop: woozy synths, swirling effects, hypnotic grooves, and spacious mixes. Keep it chill; avoid full psytrance or four-on-the-floor club energy."
+                    }
+                }
+            }
+        ]
+    },
+    "window_days": {
+        "N": "14"
+    },
+    "track_count": {
+        "N": "50"
+    },
+    "max_tracks_per_artist": {
+        "N": "1"
+    },
+    "max_overlap_yesterday": {
+        "N": "0.35"
+    },
+    "max_overlap_window": {
+        "N": "0.55"
+    },
+    "min_new_artists_window": {
+        "N": "0.6"
+    },
+    "max_attempts": {
+        "N": "4"
+    },
+    "history_entries": {
+        "L": []
+    },
+    "rotation_cursor": {
+        "N": "0"
+    }
+}
