@@ -1,20 +1,77 @@
 # Prompt → Spotify Playlist Lambda
 
-Python 3.11 AWS Lambda that turns a natural-language prompt into a curated Spotify playlist through OpenAI + Spotify APIs. Terraform in `../terraform` provisions the Lambda, IAM role, API Gateway REST API, and SSM parameters required for secrets.
+Python 3.11 AWS Lambda that turns a natural-language prompt into a curated Spotify playlist via OpenAI + Spotify APIs. Terraform under `terraform/` provisions the Lambda, IAM role, API Gateway REST API, EventBridge schedule, and required SSM parameters.
+
+## Table of Contents
+1. [Architecture Overview](#architecture-overview)
+2. [Deployment Workflow](#deployment-workflow)
+   - [Package Lambda Dependencies](#package-lambda-dependencies)
+   - [Provision Infrastructure with Terraform](#provision-infrastructure-with-terraform)
+3. [Configuration](#configuration)
+   - [Secrets in SSM Parameter Store](#secrets-in-ssm-parameter-store)
+   - [Spotify Refresh Token via PKCE](#spotify-refresh-token-via-pkce)
+   - [Scheduled Playlist Configuration (DynamoDB)](#scheduled-playlist-configuration-dynamodb)
+4. [Scheduled Regeneration](#scheduled-regeneration)
+   - [How scheduling works](#how-scheduling-works)
+   - [Managing rotation themes](#managing-rotation-themes)
+   - [Manually triggering the scheduled Lambda](#manually-triggering-the-scheduled-lambda)
+5. [Manual Playlist Generation API](#manual-playlist-generation-api)
+6. [Operations, Debugging & Logging](#operations-debugging--logging)
+7. [Reference Notes](#reference-notes)
 
 ## Architecture Overview
-- **API Gateway REST API** exposes `POST /playlist` with an `x-api-key` header enforced at the edge and validated again in the Lambda.
-- **Lambda** validates the payload, calls OpenAI for a playlist spec, refreshes a Spotify access token, finds/creates playlists, resolves tracks via Spotify Search, and writes playlist contents.
-- **SSM Parameter Store** holds the shared secret, Spotify refresh credentials, and OpenAI API key (created as placeholder SecureStrings by Terraform).
+- **API Gateway REST API** exposes `POST /playlist` with an `x-api-key` header enforced at the edge and validated inside the Lambda.
+- **Lambda** validates payloads, calls OpenAI for a playlist spec, refreshes a Spotify access token, ensures playlists exist, resolves tracks, and writes playlist contents. The same handler also processes scheduled events for recurring playlist refreshes.
+- **EventBridge** invokes the Lambda daily (03:10 Australia/Melbourne / 17:10 UTC) with `{"scheduled": true}` to run every enabled playlist configuration.
+- **DynamoDB (`playlistbot_state`)** stores playlist definitions, history entries, and rotation metadata.
+- **SSM Parameter Store** holds secrets (API key, Spotify client credentials, OpenAI key) and exposes them to the Lambda via environment variables.
 
-## Spotify Refresh Token via PKCE
+## Deployment Workflow
+### Package Lambda Dependencies
+Bundle third-party packages (currently `requests`) before applying Terraform, because the deployment zips the `lambda/` directory as-is.
+```bash
+rm -rf lambda/vendor
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+pip install -r lambda/requirements.txt -t lambda/vendor
+```
+Re-run whenever dependencies change.
+
+### Provision Infrastructure with Terraform
+```bash
+cd terraform
+terraform init
+terraform plan -out tfplan
+terraform apply tfplan
+```
+Outputs include the Lambda name, invoke URL, and fully qualified SSM parameter names. Use the same workflow for redeployments after code changes (package → `terraform apply`).
+
+## Configuration
+### Secrets in SSM Parameter Store
+Terraform seeds placeholder SecureStrings. Overwrite them with real values **before** invoking the Lambda:
+```
+/playlistbot/spotify/client_id
+/playlistbot/spotify/refresh_token
+/playlistbot/openai/api_key
+/playlistbot/security/api_key
+```
+Example:
+```bash
+aws ssm put-parameter --name /playlistbot/spotify/client_id --type SecureString --value <client_id> --overwrite
+aws ssm put-parameter --name /playlistbot/spotify/refresh_token --type SecureString --value <refresh_token> --overwrite
+aws ssm put-parameter --name /playlistbot/openai/api_key --type SecureString --value <openai_key> --overwrite
+aws ssm put-parameter --name /playlistbot/security/api_key --type SecureString --value <shared_secret> --overwrite
+```
+Do not surface the refresh token via Terraform outputs; Lambda rotates it automatically as Spotify issues new tokens.
+
+### Spotify Refresh Token via PKCE
 1. Register a Spotify app and add `http://localhost:8080/callback` to Redirect URIs.
-2. Locally generate a `code_verifier` + `code_challenge` (e.g. with `python - <<'PY' ...`).
-3. Open the authorize URL in your browser:
+2. Generate `code_verifier` + `code_challenge` locally (e.g., a short Python script).
+3. Authorize in your browser:
    ```
    https://accounts.spotify.com/authorize?client_id=<CLIENT_ID>&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A8080%2Fcallback&scope=playlist-modify-private%20playlist-read-private&code_challenge=<CODE_CHALLENGE>&code_challenge_method=S256
    ```
-4. Capture the `code` from the redirected URL and exchange it locally:
+4. Exchange the returned `code`:
    ```bash
    curl -X POST https://accounts.spotify.com/api/token \
      -d grant_type=authorization_code \
@@ -23,55 +80,10 @@ Python 3.11 AWS Lambda that turns a natural-language prompt into a curated Spoti
      -d redirect_uri=http://localhost:8080/callback \
      -d code_verifier=<CODE_VERIFIER>
    ```
-5. Store the returned `refresh_token` securely; the Lambda only needs the refresh token + client_id.
+5. Store the resulting `refresh_token` in SSM.
 
-## Secrets in SSM Parameter Store
-Terraform creates placeholder SecureString parameters that **must** be overwritten out-of-band before invoking the API:
-```
-/playlistbot/spotify/client_id
-/playlistbot/spotify/refresh_token
-/playlistbot/openai/api_key
-/playlistbot/security/api_key
-```
-Set the real values:
-```bash
-aws ssm put-parameter --name /playlistbot/spotify/client_id --type SecureString --value <client_id> --overwrite
-aws ssm put-parameter --name /playlistbot/spotify/refresh_token --type SecureString --value <refresh_token> --overwrite
-aws ssm put-parameter --name /playlistbot/openai/api_key --type SecureString --value <openai_key> --overwrite
-aws ssm put-parameter --name /playlistbot/security/api_key --type SecureString --value <shared_secret> --overwrite
-```
-Do not manage `/playlistbot/spotify/refresh_token` via Terraform outputs or state—always rotate it with `aws ssm put-parameter` so concurrent Lambda refreshes can persist the latest token.
-
-## Packaging Dependencies
-The Lambda imports `requests`, so bundle dependencies before `terraform apply`:
-```bash
-rm -rf lambda/vendor
-python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install -r lambda/requirements.txt -t lambda/vendor
-```
-`terraform` zips the entire `lambda/` directory (including `vendor/`). Re-run the packaging step whenever dependencies change.
-
-## Deploy with Terraform
-```bash
-cd terraform
-terraform init
-terraform plan -out tfplan
-terraform apply tfplan
-```
-Outputs include the Lambda name, API invoke URL, and parameter names.
-
-## Scheduled Playlist Regeneration
-Terraform also provisions:
-- **DynamoDB `playlistbot_state`** to store scheduled playlist configs + history
-- **EventBridge rule `playlistbot-daily-regen`** (runs daily at 03:10 Australia/Melbourne, i.e., 17:10 UTC) that invokes the Lambda with `{"scheduled":true}`
-
-### 1. Seed the DynamoDB table
-Start with at least one playlist configuration. Example (Lo-fi Study with seven rotating sub-genres):
-- `playlist_id` can be a placeholder formatted as `to_be_created#<slug>`. The Lambda will create the playlist on the first scheduled run, persist the real Spotify playlist id back into DynamoDB, and delete the placeholder entry.
-- Include `rotation_cursor` (initially `"0"`) so the Lambda can remember which sub-genre runs next.
-- Every template **must** include `config_name` (e.g., `"lofi"` or `"hiphop"`). During each scheduled run the Spotify playlist is renamed to `<config_name> - <current rotation theme>` (or just `<config_name>` when no rotation is defined), so pick a stable, human-friendly name.
-Use DynamoDB attribute-value JSON (every attribute needs a type wrapper):
+### Scheduled Playlist Configuration (DynamoDB)
+Seed `playlistbot_state` with playlist definitions. Example entry (lo-fi rotation with placeholder playlist):
 ```json
 {
   "playlist_id": {"S": "to_be_created#lofi_focus"},
@@ -100,41 +112,45 @@ Use DynamoDB attribute-value JSON (every attribute needs a type wrapper):
   "rotation_cursor": {"N": "0"}
 }
 ```
-Insert via CLI:
+Load it via:
 ```bash
 aws dynamodb put-item \
   --table-name playlistbot_state \
   --item file://seed_lofi.json
 ```
-Repeat for each playlist you want auto-rotated. Set `enabled=false` to pause.
+Notes:
+- `playlist_id` may start as `to_be_created#slug`; Lambda replaces it with the real Spotify ID on the first run.
+- `config_name` drives playlist naming (`<config_name> - <theme>` when rotations exist).
+- Legacy novelty guard fields (`window_days`, overlap ratios, etc.) remain in the schema but are currently ignored—history is captured for observability only.
 
-### Field reference
-- `window_days`: Size of the historical window used to compute novelty metrics and exclusion sets. Larger windows block reusing artists/tracks for longer, increasing freshness at the cost of OpenAI/Spotify matches.
-- `track_count`: Target number of tracks to publish. We request more than this from OpenAI to account for filtering, but the playlist is trimmed to exactly `track_count` when possible.
-- `max_tracks_per_artist`: Hard cap on how many tracks from the same artist can appear in a single scheduled run.
-- `max_overlap_yesterday`: Max proportion (0–1) of today’s URIs that can overlap with the previous day’s URIs before the result is considered out-of-guardrail (logged as a warning).
-- `max_overlap_window`: Same as above but measured against the last `window_days` entries.
-- `min_new_artists_window`: Minimum fraction of artists that must be new compared to the rolling window. Raising this value forces more novel artists and can increase `artist_blocked` exclusions.
-- `history_entries`: Rolling log of previous runs (auto-maintained). Do not edit manually unless seeding initial history.
-- `rotation_cursor`: Pointer used to select the next entry in `rotation_themes`. The Lambda updates this automatically after each successful run.
+## Scheduled Regeneration
+### How scheduling works
+1. EventBridge invokes the Lambda with `{"scheduled": true}` once per day.
+2. Lambda scans `playlistbot_state` for `enabled=true`, resolves the next rotation theme, generates a playlist spec via OpenAI, and overwrites the Spotify playlist contents.
+3. `scheduled_openai_max_attempts` (Terraform variable, default `1`) controls how many times the handler will attempt new OpenAI specs per job when failures occur.
+4. After a successful run, the Lambda advances `rotation_cursor` and logs novelty metrics.
 
-### 2. How scheduling works
-- EventBridge calls the Lambda once per day (`{"scheduled":true}`).
-- Lambda scans `playlistbot_state` for `enabled=true` entries, determines the rotation theme for the day, and regenerates the Spotify playlist by `playlist_id`.
-- Novelty guards enforce rolling no-repeat windows, maximum overlap, and minimum new artist ratios. Exclusions are passed into OpenAI prompts and enforced post-generation.
-- OpenAI retries for scheduled runs are controlled via the Terraform variable `scheduled_openai_max_attempts` (default `1`). Bump this to `2`+ if the OpenAI API is intermittently unavailable and you want additional automatic retries.
+### Managing rotation themes
+- Append new objects to `rotation_themes` for each config to expand the deterministic cycle.
+- `rotation_cursor` tracks the current index and is auto-updated.
+- Adjust `track_count` or prompts at any time; changes take effect on the next run.
 
-### 3. Adding/changing sub-genres (rotation themes)
-- Add additional objects in `rotation_themes`. The Lambda picks them deterministically using `(YYYYMMDD % len(rotation_themes))`, ensuring a predictable cycle.
-- Update policy fields (`window_days`, `track_count`, etc.) to tune novelty pressure per playlist.
-- `history_entries` are updated automatically after each run; do not edit manually unless seeding initial history.
+### Manually triggering the scheduled Lambda
+Force a refresh outside the normal window (e.g., after seeding data):
+```bash
+LAMBDA_NAME=$(terraform -chdir=terraform output -raw playlistbot_lambda_name)
+aws lambda invoke \
+  --function-name "$LAMBDA_NAME" \
+  --payload '{"scheduled": true}' \
+  /tmp/scheduled-run.json
+cat /tmp/scheduled-run.json
+```
+- The response mirrors the CloudWatch summary (`processed`, `succeeded`, etc.).
+- Tail logs: `aws logs tail /aws/lambda/$LAMBDA_NAME --follow`.
+- To refresh only certain playlists, temporarily update `enabled=false` for others and revert afterward.
 
-## Calling the Endpoint
-Replace `<API_URL>` and `<API_KEY>` with your deployment outputs. The request body supports:
-- `prompt` (required): 1–500 character description of the vibe.
-- `mode` (optional): `create`, `update`, or `auto` (default). Only `mode` + targeting fields drive behavior.
-- `playlist_name` (optional): target playlist when `mode=update` (and no `playlist_id`) or when `mode=auto` and you want to update by name.
-- `playlist_id` (optional): deterministic target. If provided, the Lambda updates that exact playlist ID and never creates a new playlist.
+## Manual Playlist Generation API
+Invoke the REST API for ad-hoc playlists.
 
 **Create new playlist explicitly**
 ```bash
@@ -158,7 +174,7 @@ curl -X POST "<API_URL>/playlist" \
     "playlist_name": "Tempo Run Booster"
   }'
 ```
-If the playlist exists its contents are replaced without renaming. If it does not exist, a new playlist is created using the OpenAI-generated base name + date suffix.
+If the playlist exists its contents are replaced; otherwise a new playlist is created using the OpenAI base name + date suffix.
 
 **Auto mode (default)**
 ```bash
@@ -170,9 +186,9 @@ curl -X POST "<API_URL>/playlist" \
     "playlist_name": "Sunday Roast"
   }'
 ```
-Because no `mode` is provided, auto mode updates an existing playlist named “Sunday Roast” or creates a new one if it does not exist.
+`mode` omitted → auto. Updates an existing playlist named “Sunday Roast” or creates it if missing.
 
-**Update the last playlist via playlist_id**
+**Target by `playlist_id`**
 ```bash
 curl -X POST "<API_URL>/playlist" \
   -H "content-type: application/json" \
@@ -183,23 +199,53 @@ curl -X POST "<API_URL>/playlist" \
     "playlist_id": "37i9dQZF1DX4JAvHpjipBk"
   }'
 ```
-If the playlist ID is invalid or not accessible, the Lambda returns HTTP 404 with `{"message":"playlist_id not found"}`.
+Invalid IDs return HTTP 404 with `{"message":"playlist_id not found"}`.
 
-Responses include:
+Example success payload:
 ```json
 {
   "status": "done",
   "message": "done, the playlist name is \"Tempo Run Booster\"",
   "playlist_name": "Tempo Run Booster",
   "playlist_id": "37i9dQZF1DX4JAvHpjipBk",
-  "playlist_url": "https://open.spotify.com/playlist/…",
+  "playlist_url": "https://open.spotify.com/playlist/...",
   "matched": 48,
   "unmatched": ["Artist – Song"],
   "mode_effective": "update"
 }
 ```
 
-## Notes
-- All outbound HTTP calls have 10s connect / 30s read timeouts.
-- SSM values are cached between invocations for performance.
-- Logs include `[info]`, `[warning]`, and `[critical]` prefixes for easier CloudWatch filtering.
+## Operations, Debugging & Logging
+- HTTP clients use 10 s connect / 30 s read timeouts. OpenAI calls automatically retry with exponential backoff while respecting remaining Lambda time.
+- SSM lookups are cached for 5 minutes per parameter to reduce latency.
+- CloudWatch log entries are prefixed with `[info]`, `[warning]`, or `[critical]` for easy filtering.
+- Scheduled runs summarize outcomes in JSON (`status`, `processed`, `succeeded`, `failed`, `deferred`, `skipped`). The same payload is returned when you manually invoke the scheduled event.
+- To troubleshoot playlist mismatches, inspect `spotify_track_resolution` logs for unmatched entries and `scheduled_job_context` to confirm prompts.
+- Tail logs:
+```
+aws logs tail /aws/lambda/playlistbot-handler --follow --format short --since 2d | awk '
+  {
+    # split at the first " {" (space + opening brace)
+    p = index($0, " {")
+    if (p > 0) {
+      prefix = substr($0, 1, p-1)
+      json   = substr($0, p+1)   # starts with "{"
+      print prefix
+      print json
+    } else {
+      print $0
+    }
+  }
+' \
+| jq -Rr '
+    if startswith("{")
+    then (fromjson)
+    else .
+    end
+'
+```
+
+## Reference Notes
+- Legacy novelty guard knobs (`window_days`, `max_tracks_per_artist`, overlap ratios, `history_entries`) remain in DynamoDB for backward compatibility but do not alter behavior. History exists purely for audit/analytics.
+- Playlists created during scheduled runs automatically adopt the naming pattern `<config_name> - <current rotation theme>`. Manual API calls append a date suffix (e.g., `Base Name 23-01-2026`).
+- When `mode=update`, playlist metadata (name + description) is updated to include the human-readable variation axis derived from the latest OpenAI response.

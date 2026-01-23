@@ -509,6 +509,102 @@ def validate_spec(spec: Dict[str, Any]) -> None:
             raise HTTPError(502, "OpenAI track missing fields")
 
 
+def describe_variation_axis(variation_axis: Optional[str]) -> Optional[str]:
+    axis_value = _clean_string(variation_axis)
+    if not axis_value:
+        return None
+
+    base_axis, detail = _split_axis_value(axis_value)
+    axis_key = base_axis.casefold()
+
+    for keywords, builder in VARIATION_AXIS_DESCRIPTORS:
+        if any(keyword in axis_key for keyword in keywords):
+            return builder(detail)
+
+    base_label = base_axis.replace("-", " ").strip().title()
+    detail_text = _clean_string(detail)
+    if detail_text:
+        return f"Variation focus – {base_label}: {detail_text}."
+    return f"Variation focus – {base_label}."
+
+
+def build_playlist_description(
+    base_description: Optional[str], variation_axis: Optional[str]
+) -> Optional[str]:
+    base_text = _clean_string(base_description)
+    axis_sentence = describe_variation_axis(variation_axis)
+
+    if axis_sentence and base_text:
+        if axis_sentence in base_text:
+            return base_text
+        return f"{base_text}\n\n{axis_sentence}".strip()
+    if axis_sentence:
+        return axis_sentence
+    return base_text or None
+
+
+def _split_axis_value(value: str) -> Tuple[str, Optional[str]]:
+    separators = (":", "–", "-", "—", "|", "/", "•")
+    for sep in separators:
+        if sep in value:
+            left, right = value.split(sep, 1)
+            base_part = left.strip()
+            detail_part = right.strip() or None
+            if base_part:
+                return base_part, detail_part
+    return value.strip(), None
+
+
+def _axis_detail(detail: Optional[str], fallback: str) -> str:
+    return _clean_string(detail) or fallback
+
+
+def _describe_era(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "a distinct moment in the genre's timeline")
+    return f"Variation focus – Era spotlight, leaning into {focus}."
+
+
+def _describe_mood(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "a deliberate emotional arc")
+    return f"Variation focus – Mood journey that traces {focus}."
+
+
+def _describe_production(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "specific production textures and studio choices")
+    return f"Variation focus – Production lens, highlighting {focus}."
+
+
+def _describe_energy(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "a sculpted ebb-and-flow in energy")
+    return f"Variation focus – Energy contour, sequenced for {focus}."
+
+
+def _describe_culture(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "a particular regional or cultural scene")
+    return f"Variation focus – Cultural lens, spotlighting {focus}."
+
+
+def _describe_instrumentation(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "signature timbres and instrumentation")
+    return f"Variation focus – Instrument spotlight, centering {focus}."
+
+
+def _describe_adjacency(detail: Optional[str]) -> str:
+    focus = _axis_detail(detail, "artists orbiting the playlist's core sound")
+    return f"Variation focus – Artist adjacency, weaving in {focus}."
+
+
+VARIATION_AXIS_DESCRIPTORS: Tuple[Tuple[Tuple[str, ...], Callable[[Optional[str]], str]], ...] = (
+    (("era emphasis", "era", "decade"), _describe_era),
+    (("mood shift", "mood"), _describe_mood),
+    (("production style", "production", "studio"), _describe_production),
+    (("energy contour", "energy"), _describe_energy),
+    (("cultural/geographic lens", "cultural lens", "geographic", "geography", "cultural"), _describe_culture),
+    (("instrumentation focus", "instrumentation", "instrument"), _describe_instrumentation),
+    (("artist-adjacency", "artist adjacency", "adjacency"), _describe_adjacency),
+)
+
+
 def refresh_spotify_access_token() -> str:
     client_id = get_secure_parameter("spotify_client_id_param")
     refresh_param_name = _get_parameter_name("spotify_refresh_token_param")
@@ -1024,25 +1120,8 @@ def _normalize_playlist_name(value: Optional[str]) -> str:
 def build_history_sets(
     history_entries: List[Dict[str, Any]], window_days: int
 ) -> Tuple[set, set, set]:
-    relevant = (
-        history_entries[-window_days:]
-        if window_days > 0 and len(history_entries) > window_days
-        else history_entries
-    )
-    track_keys: set = set()
-    artist_keys: set = set()
-    uris: set = set()
-    for entry in relevant:
-        for key in entry.get("track_keys", []):
-            if isinstance(key, str):
-                track_keys.add(key)
-        for key in entry.get("artist_keys", []):
-            if isinstance(key, str):
-                artist_keys.add(key)
-        for uri in entry.get("uris", []):
-            if isinstance(uri, str):
-                uris.add(uri)
-    return track_keys, artist_keys, uris
+    # Historical guardrails are disabled; exclude sets remain empty regardless of input.
+    return set(), set(), set()
 
 
 def filter_tracks_with_constraints(
@@ -1052,10 +1131,10 @@ def filter_tracks_with_constraints(
     max_tracks_per_artist: int,
     track_count: int,
 ) -> List[Dict[str, str]]:
+    _ = max_tracks_per_artist  # max_tracks_per_artist setting disabled
     final_tracks: List[Dict[str, str]] = []
     track_block = set(exclude_track_keys)
     artist_block = set(exclude_artist_keys)
-    artist_counts: Dict[str, int] = defaultdict(int)
     exclusion_log: Dict[str, List[str]] = defaultdict(list)
 
     def record_exclusion(reason: str, track: Dict[str, str]) -> None:
@@ -1079,14 +1158,9 @@ def filter_tracks_with_constraints(
         if artist_key in artist_block:
             record_exclusion("artist_blocked", track)
             continue
-        if artist_counts[artist_key] >= max_tracks_per_artist:
-            record_exclusion("artist_quota_reached", track)
-            continue
 
         final_tracks.append({"artist": artist.strip(), "title": title.strip()})
         track_block.add(track_key)
-        artist_block.add(artist_key)
-        artist_counts[artist_key] += 1
 
         if len(final_tracks) >= track_count:
             break
@@ -1281,9 +1355,8 @@ def update_playlist_history(
     new_entry: Dict[str, Any],
     window_days: int,
 ) -> None:
+    _ = window_days  # window_days is inert but kept for compatibility
     entries = (history_entries or []) + [new_entry]
-    if window_days > 0 and len(entries) > window_days:
-        entries = entries[-window_days:]
 
     table.update_item(
         Key={"playlist_id": playlist_id},
@@ -1677,18 +1750,11 @@ def process_scheduled_event() -> Dict[str, Any]:
 
         window_days = _to_int(item.get("window_days"), 14)
         track_count = _to_int(item.get("track_count"), 50)
-        max_tracks_per_artist = _to_int(item.get("max_tracks_per_artist"), 1)
-        max_overlap_yesterday = _to_float(item.get("max_overlap_yesterday"), 0.35)
-        max_overlap_window = _to_float(item.get("max_overlap_window"), 0.55)
-        min_new_artists_window = _to_float(item.get("min_new_artists_window"), 0.60)
         exclude_track_keys, exclude_artist_keys, window_uris = build_history_sets(
             history_entries, window_days
         )
         window_artist_keys = set(exclude_artist_keys)
-        yesterday_entry = history_entries[-1] if history_entries else None
-        yesterday_uris = (
-            set(yesterday_entry.get("uris", [])) if yesterday_entry else set()
-        )
+        yesterday_uris: set = set()
 
         job_context = {
             "playlist_id": playlist_id,
@@ -1700,10 +1766,6 @@ def process_scheduled_event() -> Dict[str, Any]:
             "history_entries": history_entries,
             "window_days": window_days,
             "track_count": track_count,
-            "max_tracks_per_artist": max_tracks_per_artist,
-            "max_overlap_yesterday": max_overlap_yesterday,
-            "max_overlap_window": max_overlap_window,
-            "min_new_artists_window": min_new_artists_window,
             "exclude_track_keys": exclude_track_keys,
             "exclude_artist_keys": exclude_artist_keys,
             "window_uris": window_uris,
@@ -1738,16 +1800,7 @@ def process_scheduled_event() -> Dict[str, Any]:
         )
         job_context["prompt_track_target"] = prompt_needed
 
-        extra_instructions = [
-            (
-                "Respect novelty guardrails: "
-                f"overlap_yesterday <= {max_overlap_yesterday:.2f}, "
-                f"overlap_window <= {max_overlap_window:.2f}, "
-                f"new_artist_ratio >= {min_new_artists_window:.2f}, "
-                f"max {max_tracks_per_artist} tracks per artist."
-            )
-        ]
-        extra_instructions.append(VARIATION_GUIDANCE)
+        extra_instructions = [VARIATION_GUIDANCE]
         prompt_text = build_scheduled_prompt(
             base_prompt,
             prompt_needed,
@@ -2066,6 +2119,9 @@ def generate_playlist_response(
         raise
     suffix = datetime.now(tz=TIMEZONE).strftime(" %d-%m-%Y")
     desired_name = f"{spec['base_name']}{suffix}"
+    variation_description = build_playlist_description(
+        spec.get("description"), spec.get("variation_axis")
+    )
 
     access_token = refresh_spotify_access_token()
     user = fetch_spotify_user(access_token)
@@ -2090,7 +2146,7 @@ def generate_playlist_response(
 
     if playlist_data is None:
         playlist_data = create_playlist(
-            access_token, user["id"], desired_name, spec.get("description")
+            access_token, user["id"], desired_name, variation_description
         )
         effective_mode = "create"
 
@@ -2106,6 +2162,22 @@ def generate_playlist_response(
         replace_playlist_contents(access_token, playlist_id, uris)
     else:
         add_tracks_to_playlist(access_token, playlist_id, uris)
+
+    if variation_description and effective_mode == "update":
+        try:
+            update_playlist_metadata(
+                access_token,
+                playlist_id,
+                final_playlist_name,
+                variation_description,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            log(
+                "warning",
+                "Failed to persist variation axis description for playlist",
+                playlist_id=playlist_id,
+                error=str(exc),
+            )
 
     result = {
         "status": "done",
@@ -2137,10 +2209,6 @@ def run_scheduled_playlist(
     playlist_name = job.get("playlist_name")
     genre = job.get("genre")
     track_count = job.get("track_count", 50)
-    max_tracks_per_artist = job.get("max_tracks_per_artist", 1)
-    max_overlap_yesterday = job.get("max_overlap_yesterday", 0.35)
-    max_overlap_window = job.get("max_overlap_window", 0.55)
-    min_new_artists_window = job.get("min_new_artists_window", 0.60)
     history_entries = job.get("history_entries") or []
     window_days = job.get("window_days", 14)
     exclude_track_keys = job.get("exclude_track_keys", set())
@@ -2157,7 +2225,7 @@ def run_scheduled_playlist(
         spec.get("tracks"),
         exclude_track_keys,
         exclude_artist_keys,
-        max_tracks_per_artist,
+        job.get("max_tracks_per_artist", track_count),
         track_count,
     )
 
@@ -2181,19 +2249,28 @@ def run_scheduled_playlist(
         desired_playlist_name = build_playlist_display_name(template_name, theme_name)
     except ValueError:
         desired_playlist_name = playlist_name
-    if desired_playlist_name and playlist_data.get("name") != desired_playlist_name:
-        description_text = spec.get("description") or (
-            base_prompt if isinstance(base_prompt, str) else None
-        )
+    description_text = build_playlist_description(
+        spec.get("description"), spec.get("variation_axis")
+    )
+    if not description_text and isinstance(base_prompt, str):
+        description_text = base_prompt
+    new_playlist_name = playlist_data.get("name") or playlist_name
+    should_update_metadata = False
+    if desired_playlist_name and desired_playlist_name != new_playlist_name:
+        new_playlist_name = desired_playlist_name
+        should_update_metadata = True
+    if description_text:
+        should_update_metadata = True
+    if should_update_metadata:
         try:
             update_playlist_metadata(
                 access_token,
                 playlist_id,
-                desired_playlist_name,
+                new_playlist_name or playlist_data.get("name") or playlist_name or "",
                 description_text,
             )
-            playlist_data["name"] = desired_playlist_name
-            playlist_name = desired_playlist_name
+            playlist_data["name"] = new_playlist_name or playlist_data.get("name")
+            playlist_name = playlist_data["name"]
         except Exception as exc:  # pylint: disable=broad-except
             log(
                 "warning",
@@ -2202,6 +2279,8 @@ def run_scheduled_playlist(
                 error=str(exc),
             )
     else:
+        playlist_name = new_playlist_name
+    if not playlist_name:
         playlist_name = playlist_data.get("name")
     playlist_url = playlist_data.get("external_urls", {}).get("spotify")
 
@@ -2223,19 +2302,6 @@ def run_scheduled_playlist(
         },
         window_days,
     )
-
-    final_pass = (
-        metrics["overlap_yesterday"] <= max_overlap_yesterday
-        and metrics["overlap_window"] <= max_overlap_window
-        and metrics["new_artist_ratio"] >= min_new_artists_window
-    )
-    if not final_pass:
-        log(
-            "warning",
-            "Scheduled playlist metrics exceeded thresholds",
-            playlist_id=playlist_id,
-            metrics=metrics,
-        )
 
     log(
         "info",
