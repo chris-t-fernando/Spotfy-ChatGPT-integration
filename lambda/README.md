@@ -138,7 +138,7 @@ Notes:
 ### Manually triggering the scheduled Lambda
 Force a refresh outside the normal window (e.g., after seeding data):
 ```bash
-LAMBDA_NAME=$(terraform -chdir=terraform output -raw playlistbot_lambda_name)
+LAMBDA_NAME=$(terraform -chdir=terraform output -raw lambda_function_name)
 aws lambda invoke \
   --function-name "$LAMBDA_NAME" \
   --payload '{"scheduled": true}' \
